@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reguant — Ultra-Lightweight GitOps PaaS</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Tailwind Config -->
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              DEFAULT: '#4f46e5',
+              dark: '#3730a3',
+              glow: 'rgba(79, 70, 229, 0.15)'
+            },
+            darkbg: '#090a0f',
+            cardbg: 'rgba(15, 17, 26, 0.7)'
+          }
+        }
+      }
+    }
+  </script>
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Xterm.js for interactive Web Terminal -->
+  <link rel="stylesheet" href="https://unpkg.com/xterm@5.3.0/css/xterm.css" />
+  <script src="https://unpkg.com/xterm@5.3.0/lib/xterm.js"></script>
+  <!-- Font Setup -->
+  <style>
+    body {
+      font-family: 'Outfit', sans-serif;
+      background: radial-gradient(circle at top right, rgba(79, 70, 229, 0.08), transparent 50%), #090a0f;
+    }
+    .mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .glass {
+      background: rgba(15, 17, 26, 0.7);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.04);
+    }
+    .glass-hover:hover {
+      border-color: rgba(79, 70, 229, 0.3);
+      box-shadow: 0 0 25px rgba(79, 70, 229, 0.1);
+    }
+  </style>
+</head>
+<body class="text-slate-100 min-h-screen flex flex-col antialiased">
+
+  <!-- Navigation -->
+  <nav class="glass border-b border-white/5 py-4 px-6 md:px-12 flex items-center justify-between sticky top-0 z-50">
+    <div class="flex items-center gap-3">
+      <!-- Reguant Brand Logo -->
+      <img src="/logo.jpg" alt="Reguant Logo" class="w-10 h-10 rounded-xl object-cover shadow-lg border border-white/10" onerror="this.src='https://placehold.co/40x40/4f46e5/ffffff?text=R'">
+      <div>
+        <span class="font-extrabold text-xl tracking-tight text-white">reguant</span>
+        <span class="text-xs text-brand font-bold uppercase tracking-wider ml-1">PaaS</span>
+      </div>
+    </div>
+    <div class="flex items-center gap-6">
+      <a href="#apps" onclick="showTab('apps')" class="text-slate-300 hover:text-white transition-colors text-sm font-semibold flex items-center gap-2">
+        <i data-lucide="box" class="w-4 h-4"></i> Applications
+      </a>
+      <a href="#create" onclick="showTab('create')" class="text-slate-300 hover:text-white transition-colors text-sm font-semibold flex items-center gap-2">
+        <i data-lucide="plus-circle" class="w-4 h-4"></i> New App
+      </a>
+      <a href="#stats" onclick="showTab('stats')" class="text-slate-300 hover:text-white transition-colors text-sm font-semibold flex items-center gap-2">
+        <i data-lucide="activity" class="w-4 h-4"></i> Server Health
+      </a>
+    </div>
+  </nav>
+
+  <!-- Main Container -->
+  <main class="flex-1 max-w-7xl w-full mx-auto p-6 md:p-12 space-y-12">
+
+    <!-- Tab 1: Applications Dashboard -->
+    <section id="tab-apps" class="space-y-8 tab-content">
+      <div class="flex items-center justify-between">
+        <div>
+          <h1 class="text-3xl font-extrabold text-white">Your Applications</h1>
+          <p class="text-slate-400 text-sm mt-1">Manage and deploy microservices with zero downtime.</p>
+        </div>
+        <button onclick="showTab('create')" class="bg-brand text-white px-5 py-2.5 rounded-xl font-bold flex items-center gap-2 hover:bg-brand-dark transition-all duration-300 shadow-lg shadow-brand/20 hover:-translate-y-0.5">
+          <i data-lucide="plus" class="w-4 h-4"></i> Deploy App
+        </button>
+      </div>
+
+      <!-- App Grid -->
+      <div id="apps-grid" class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+        <!-- Loader Skeleton -->
+        <div class="glass p-6 rounded-2xl animate-pulse flex flex-col gap-4">
+          <div class="h-6 w-2/3 bg-white/5 rounded"></div>
+          <div class="h-4 w-full bg-white/5 rounded"></div>
+          <div class="h-10 w-full bg-white/5 rounded mt-4"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 2: Create Application -->
+    <section id="tab-create" class="max-w-2xl mx-auto space-y-8 tab-content hidden">
+      <div>
+        <h1 class="text-3xl font-extrabold text-white">Deploy New Application</h1>
+        <p class="text-slate-400 text-sm mt-1">Connect your Git repo to build locally or deploy container binaries.</p>
+      </div>
+
+      <form id="create-app-form" onsubmit="createApp(event)" class="glass p-8 rounded-3xl border border-white/5 space-y-6">
+        <div>
+          <label class="block text-sm font-bold text-slate-300 mb-2">Application Name</label>
+          <input type="text" id="app-name" required placeholder="my-web-app" class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-brand transition-all">
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm font-bold text-slate-300 mb-2">Git Repository URL</label>
+            <input type="text" id="app-git" required placeholder="https://github.com/user/repo" class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-brand transition-all">
+          </div>
+          <div>
+            <label class="block text-sm font-bold text-slate-300 mb-2">Branch</label>
+            <input type="text" id="app-branch" default="main" value="main" class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-brand transition-all">
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-sm font-bold text-slate-300 mb-2">Deployment Runtime</label>
+          <div class="grid grid-cols-2 gap-4">
+            <label class="cursor-pointer">
+              <input type="radio" name="build_type" value="docker" checked onclick="toggleBuildFields('docker')" class="sr-only peer">
+              <div class="glass p-4 rounded-xl border border-white/5 peer-checked:border-brand peer-checked:bg-brand/5 text-center transition-all">
+                <i data-lucide="container" class="w-6 h-6 mx-auto mb-2 text-slate-400 peer-checked:text-brand"></i>
+                <span class="block font-bold text-sm">Docker Container</span>
+                <span class="block text-xs text-slate-400 mt-1">Full isolation</span>
+              </div>
+            </label>
+            <label class="cursor-pointer">
+              <input type="radio" name="build_type" value="systemd" onclick="toggleBuildFields('systemd')" class="sr-only peer">
+              <div class="glass p-4 rounded-xl border border-white/5 peer-checked:border-brand peer-checked:bg-brand/5 text-center transition-all">
+                <i data-lucide="cpu" class="w-6 h-6 mx-auto mb-2 text-slate-400 peer-checked:text-brand"></i>
+                <span class="block font-bold text-sm">Native Systemd</span>
+                <span class="block text-xs text-slate-400 mt-1">Zero RAM overhead</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <!-- Custom fields for Systemd -->
+        <div id="systemd-fields" class="space-y-4 hidden">
+          <div>
+            <label class="block text-sm font-bold text-slate-300 mb-2">Build Command</label>
+            <input type="text" id="app-build-cmd" placeholder="npm install && npm run build" class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-brand transition-all">
+          </div>
+          <div>
+            <label class="block text-sm font-bold text-slate-300 mb-2">Run Command</label>
+            <input type="text" id="app-run-cmd" placeholder="node start" class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-brand transition-all">
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm font-bold text-slate-300 mb-2">Domain Binding (Optional)</label>
+            <input type="text" id="app-domain" placeholder="app.mydomain.com" class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-brand transition-all">
+          </div>
+          <div>
+            <label class="block text-sm font-bold text-slate-300 mb-2">Staging Internal Port</label>
+            <input type="number" id="app-port" placeholder="Auto-assigned" class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white/50 focus:outline-none transition-all" readonly>
+          </div>
+        </div>
+
+        <!-- Environment Variables Textarea -->
+        <div>
+          <label class="block text-sm font-bold text-slate-300 mb-2">Environment Variables (KEY=VALUE, one per line)</label>
+          <textarea id="app-env-vars" placeholder="DB_HOST=127.0.0.1&#10;DB_PORT=5432&#10;API_KEY=supersecret" rows="4" class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-brand transition-all mono text-xs"></textarea>
+        </div>
+
+        <button type="submit" class="w-full bg-brand text-white py-4 rounded-xl font-bold hover:bg-brand-dark transition-all duration-300 shadow-lg shadow-brand/20">
+          Create Application
+        </button>
+      </form>
+    </section>
+
+    <!-- Tab 3: System Stats & Health -->
+    <section id="tab-stats" class="space-y-8 tab-content hidden">
+      <div>
+        <h1 class="text-3xl font-extrabold text-white">Server Health</h1>
+        <p class="text-slate-400 text-sm mt-1">Real-time resources parsed from /proc system files.</p>
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-8">
+        <!-- CPU Gauge -->
+        <div class="glass p-8 rounded-3xl flex flex-col items-center justify-center relative overflow-hidden">
+          <h3 class="text-lg font-bold text-slate-300 mb-6">CPU Load</h3>
+          <div class="relative w-44 h-44 flex items-center justify-center">
+            <!-- Circular Progress SVG -->
+            <svg class="absolute inset-0 w-full h-full transform -rotate-90">
+              <circle cx="88" cy="88" r="70" class="stroke-white/5 fill-transparent" stroke-width="12" />
+              <circle id="cpu-circle" cx="88" cy="88" r="70" class="stroke-brand fill-transparent" stroke-width="12" stroke-dasharray="440" stroke-dashoffset="440" stroke-linecap="round" />
+            </svg>
+            <span id="cpu-value" class="text-4xl font-black text-white">0%</span>
+          </div>
+        </div>
+
+        <!-- RAM Gauge -->
+        <div class="glass p-8 rounded-3xl flex flex-col items-center justify-center relative overflow-hidden">
+          <h3 class="text-lg font-bold text-slate-300 mb-6">RAM Consumption</h3>
+          <div class="relative w-44 h-44 flex items-center justify-center">
+            <!-- Circular Progress SVG -->
+            <svg class="absolute inset-0 w-full h-full transform -rotate-90">
+              <circle cx="88" cy="88" r="70" class="stroke-white/5 fill-transparent" stroke-width="12" />
+              <circle id="ram-circle" cx="88" cy="88" r="70" class="stroke-cyan-500 fill-transparent" stroke-width="12" stroke-dasharray="440" stroke-dashoffset="440" stroke-linecap="round" />
+            </svg>
+            <span id="ram-value" class="text-4xl font-black text-white">0%</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Modal: Streaming logs -->
+    <div id="logs-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+      <div class="glass w-full max-w-4xl h-[80vh] rounded-3xl border border-white/10 flex flex-col overflow-hidden shadow-2xl">
+        <div class="px-8 py-5 border-b border-white/5 flex items-center justify-between bg-black/20">
+          <div class="flex items-center gap-3">
+            <span class="w-3 h-3 rounded-full bg-brand animate-ping"></span>
+            <h3 class="font-extrabold text-lg text-white">Streaming Deployment Logs</h3>
+          </div>
+          <button onclick="closeLogsModal()" class="text-slate-400 hover:text-white transition-colors">
+            <i data-lucide="x" class="w-6 h-6"></i>
+          </button>
+        </div>
+        <div id="logs-terminal" class="flex-1 bg-black/60 p-6 overflow-y-auto mono text-xs text-emerald-400/90 leading-relaxed whitespace-pre-wrap">
+          Initializing connection...
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Interactive App Terminal -->
+    <div id="terminal-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+      <div class="glass w-full max-w-4xl h-[70vh] rounded-3xl border border-white/10 flex flex-col overflow-hidden shadow-2xl">
+        <div class="px-8 py-5 border-b border-white/5 flex items-center justify-between bg-black/20">
+          <div class="flex items-center gap-3">
+            <i data-lucide="terminal" class="w-5 h-5 text-cyan-400"></i>
+            <h3 id="terminal-title" class="font-extrabold text-lg text-white">App Terminal Shell</h3>
+          </div>
+          <button onclick="closeTerminalModal()" class="text-slate-400 hover:text-white transition-colors">
+            <i data-lucide="x" class="w-6 h-6"></i>
+          </button>
+        </div>
+        <!-- Target div for xterm.js -->
+        <div id="xterm-container" class="flex-1 bg-black p-4"></div>
+      </div>
+    </div>
+
+    <!-- Modal: Environment Variables Editor -->
+    <div id="env-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+      <div class="glass w-full max-w-2xl rounded-3xl border border-white/10 flex flex-col overflow-hidden shadow-2xl">
+        <div class="px-8 py-5 border-b border-white/5 flex items-center justify-between bg-black/20">
+          <div class="flex items-center gap-3">
+            <i data-lucide="settings" class="w-5 h-5 text-indigo-400"></i>
+            <h3 id="env-title" class="font-extrabold text-lg text-white">Edit Environment Variables</h3>
+          </div>
+          <button onclick="closeEnvModal()" class="text-slate-400 hover:text-white transition-colors">
+            <i data-lucide="x" class="w-6 h-6"></i>
+          </button>
+        </div>
+        <div class="p-8 space-y-6">
+          <p class="text-sm text-slate-400">Define environment variables in <code class="mono text-brand bg-white/5 px-2 py-1 rounded">KEY=VALUE</code> format. Reguant will redeploy containers or reload systemd files automatically.</p>
+          <textarea id="env-edit-vars" rows="8" class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-brand transition-all mono text-xs" placeholder="PORT=8080&#10;DATABASE_URL=postgres://..."></textarea>
+          
+          <div class="flex items-center gap-4 justify-end">
+            <button onclick="closeEnvModal()" class="px-5 py-2.5 rounded-xl font-bold border border-white/10 text-slate-300 hover:bg-white/5 transition-all text-sm">Cancel</button>
+            <button id="save-env-btn" class="px-5 py-2.5 rounded-xl font-bold bg-brand text-white hover:bg-brand-dark transition-all text-sm shadow-lg shadow-brand/20">Save & Apply</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+    // Tab Router
+    function showTab(tabName) {
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+      document.getElementById('tab-' + tabName).classList.remove('hidden');
+    }
+
+    function toggleBuildFields(type) {
+      const systemdFields = document.getElementById('systemd-fields');
+      if (type === 'systemd') {
+        systemdFields.classList.remove('hidden');
+      } else {
+        systemdFields.classList.add('hidden');
+      }
+    }
+
+    // Connect to WebSocket Server Metrics
+    const host = window.location.host;
+    const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const statsWS = new WebSocket(`${wsProto}//${host}/api/ws/stats`);
+
+    statsWS.onmessage = function(event) {
+      const data = JSON.parse(event.data);
+      updateGauge('cpu', data.cpu);
+      updateGauge('ram', data.mem);
+    };
+
+    function updateGauge(type, val) {
+      document.getElementById(`${type}-value`).innerText = val.toFixed(0) + '%';
+      const circle = document.getElementById(`${type}-circle`);
+      const radius = circle.r.baseVal.value;
+      const circumference = 2 * Math.PI * radius;
+      const offset = circumference - (val / 100) * circumference;
+      circle.style.strokeDashoffset = offset;
+    }
+
+    let globalAppsCache = [];
+
+    // Fetch and render Applications
+    async function loadApps() {
+      try {
+        const res = await fetch('/api/apps');
+        const apps = await res.json();
+        globalAppsCache = apps || [];
+        const grid = document.getElementById('apps-grid');
+        grid.innerHTML = '';
+
+        if (!apps || apps.length === 0) {
+          grid.innerHTML = `
+            <div class="col-span-full glass p-12 text-center rounded-3xl border border-white/5 space-y-4">
+              <i data-lucide="inbox" class="w-12 h-12 text-slate-500 mx-auto"></i>
+              <h3 class="font-bold text-lg text-slate-300">No applications deployed yet</h3>
+              <p class="text-sm text-slate-500">Create your first deployment by clicking the deploy button above.</p>
+            </div>
+          `;
+          lucide.createIcons();
+          return;
+        }
+
+        apps.forEach(app => {
+          const card = document.createElement('div');
+          card.className = 'glass p-6 rounded-2xl border border-white/5 glass-hover transition-all duration-300 flex flex-col justify-between';
+          card.innerHTML = `
+            <div class="space-y-3">
+              <div class="flex items-center justify-between">
+                <h3 class="font-bold text-lg text-white">${app.Name}</h3>
+                <div class="flex items-center gap-2">
+                  <span class="px-2.5 py-1 rounded-full text-xs font-bold ${
+                    app.BuildType === 'docker' ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20' : 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20'
+                  }">${app.BuildType}</span>
+                  <button onclick="deleteApp('${app.ID}', '${app.Name}')" class="text-rose-400 hover:text-rose-600 transition-colors p-1" title="Delete application">
+                    <i data-lucide="trash-2" class="w-4 h-4"></i>
+                  </button>
+                </div>
+              </div>
+              <p class="text-xs text-slate-400 truncate mono">${app.GitRepo}</p>
+              <div class="text-sm font-semibold text-slate-300 flex items-center gap-1.5">
+                <i data-lucide="link" class="w-3.5 h-3.5 text-brand"></i>
+                <a href="http://${app.Domain || '127.0.0.1:' + app.Port}" target="_blank" class="hover:underline">${app.Domain || 'Port: ' + app.Port}</a>
+              </div>
+            </div>
+            <div class="grid grid-cols-3 gap-2 mt-6">
+              <button onclick="deployApp('${app.ID}')" class="bg-white/5 hover:bg-brand hover:text-white border border-white/10 rounded-xl py-2 text-[11px] font-bold transition-all flex items-center justify-center gap-1">
+                <i data-lucide="refresh-cw" class="w-3 h-3"></i> Deploy
+              </button>
+              <button onclick="openTerminalModal('${app.ID}', '${app.Name}')" class="bg-cyan-500/5 hover:bg-cyan-500 hover:text-black border border-cyan-500/10 hover:border-cyan-500 rounded-xl py-2 text-[11px] font-bold transition-all flex items-center justify-center gap-1 text-cyan-400">
+                <i data-lucide="terminal" class="w-3 h-3"></i> Shell
+              </button>
+              <button onclick="openEnvModal('${app.ID}', '${app.Name}')" class="bg-indigo-500/5 hover:bg-indigo-500 hover:text-white border border-indigo-500/10 hover:border-indigo-500 rounded-xl py-2 text-[11px] font-bold transition-all flex items-center justify-center gap-1 text-indigo-400">
+                <i data-lucide="settings" class="w-3 h-3"></i> Env Vars
+              </button>
+            </div>
+          `;
+          grid.appendChild(card);
+        });
+        lucide.createIcons();
+      } catch (err) {
+        console.error("Failed to load apps:", err);
+      }
+    }
+
+    // Deploy Application Logs Modal
+    let activeWSLog = null;
+    async function deployApp(appId) {
+      document.getElementById('logs-modal').classList.remove('hidden');
+      const terminal = document.getElementById('logs-terminal');
+      terminal.innerText = 'Triggering deployment build queue...\n';
+
+      try {
+        const res = await fetch(`/api/apps/deploy?app_id=${appId}`, { method: 'POST' });
+        const data = await res.json();
+
+        if (activeWSLog) activeWSLog.close();
+        activeWSLog = new WebSocket(`${wsProto}//${host}/api/ws/logs?dep_id=${data.deployment_id}`);
+
+        activeWSLog.onmessage = function(event) {
+          terminal.innerText += event.data;
+          terminal.scrollTop = terminal.scrollHeight;
+        };
+
+        activeWSLog.onclose = function() {
+          loadApps();
+        };
+
+      } catch (err) {
+        terminal.innerText += "\nError triggering deployment: " + err.message;
+      }
+    }
+
+    function closeLogsModal() {
+      document.getElementById('logs-modal').classList.add('hidden');
+      if (activeWSLog) activeWSLog.close();
+    }
+
+    async function deleteApp(appId, name) {
+      if (!confirm(`Are you sure you want to permanently delete application "${name}"?\nThis will stop and destroy Docker/Systemd processes, remove Nginx routing config, and erase all records.`)) {
+        return;
+      }
+      try {
+        const res = await fetch(`/api/apps?app_id=${appId}`, {
+          method: 'DELETE'
+        });
+        if (res.ok) {
+          loadApps();
+        } else {
+          alert("Failed to delete application");
+        }
+      } catch (err) {
+        alert("Error deleting app: " + err.message);
+      }
+    }
+
+    // Env Modal management
+    function openEnvModal(appId, appName) {
+      document.getElementById('env-modal').classList.remove('hidden');
+      document.getElementById('env-title').innerText = `Edit Env Variables — ${appName}`;
+      
+      const app = globalAppsCache.find(a => a.ID === appId);
+      const textarea = document.getElementById('env-edit-vars');
+      
+      // Convert JSON env vars back to KEY=VALUE string
+      if (app && app.EnvVars) {
+        try {
+          const envMap = JSON.parse(app.EnvVars);
+          let envStr = '';
+          for (const key in envMap) {
+            envStr += `${key}=${envMap[key]}\n`;
+          }
+          textarea.value = envStr;
+        } catch (e) {
+          textarea.value = '';
+        }
+      } else {
+        textarea.value = '';
+      }
+
+      // Configure save button click handler
+      const saveBtn = document.getElementById('save-env-btn');
+      saveBtn.onclick = async function() {
+        const lines = textarea.value.split('\n');
+        const envMap = {};
+        lines.forEach(line => {
+          const cleanLine = line.trim();
+          if (cleanLine && cleanLine.includes('=')) {
+            const idx = cleanLine.indexOf('=');
+            const key = cleanLine.substring(0, idx).trim();
+            const val = cleanLine.substring(idx + 1).trim();
+            if (key) {
+              envMap[key] = val;
+            }
+          }
+        });
+
+        try {
+          saveBtn.innerText = "Saving...";
+          saveBtn.disabled = true;
+
+          const res = await fetch(`/api/apps/env?app_id=${appId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(envMap)
+          });
+
+          if (res.ok) {
+            closeEnvModal();
+            loadApps();
+            // Automatically trigger redeployment to apply variables
+            deployApp(appId);
+          } else {
+            alert("Failed to save environment variables");
+          }
+        } catch (err) {
+          alert("Network error: " + err.message);
+        } finally {
+          saveBtn.innerText = "Save & Apply";
+          saveBtn.disabled = false;
+        }
+      };
+    }
+
+    function closeEnvModal() {
+      document.getElementById('env-modal').classList.add('hidden');
+    }
+
+    // Interactive Terminal Logic (Xterm.js)
+    let term = null;
+    let activeWSTerm = null;
+
+    function openTerminalModal(appId, appName) {
+      document.getElementById('terminal-modal').classList.remove('hidden');
+      document.getElementById('terminal-title').innerText = `App Terminal Shell — ${appName}`;
+      
+      const container = document.getElementById('xterm-container');
+      container.innerHTML = ''; // Clean old instance
+
+      term = new Terminal({
+        cursorBlink: true,
+        theme: {
+          background: '#000000',
+          foreground: '#22c55e',
+          cursor: '#ffffff'
+        },
+        fontFamily: 'JetBrains Mono, monospace',
+        fontSize: 13
+      });
+
+      term.open(container);
+      term.write("Connecting to app terminal shell...\r\n");
+
+      activeWSTerm = new WebSocket(`${wsProto}//${host}/api/ws/terminal?app_id=${appId}`);
+
+      activeWSTerm.onopen = function() {
+        term.write("Connection established. Happy hacking!\r\n\r\n");
+      };
+
+      activeWSTerm.onmessage = function(event) {
+        if (event.data instanceof Blob) {
+          const reader = new FileReader();
+          reader.onload = function() {
+            term.write(new Uint8Array(reader.result));
+          };
+          reader.readAsArrayBuffer(event.data);
+        } else {
+          term.write(event.data);
+        }
+      };
+
+      term.onData(data => {
+        if (activeWSTerm && activeWSTerm.readyState === WebSocket.OPEN) {
+          activeWSTerm.send(data);
+        }
+      });
+
+      activeWSTerm.onclose = function() {
+        term.write("\r\n--- Connection Closed ---\r\n");
+      };
+    }
+
+    function closeTerminalModal() {
+      document.getElementById('terminal-modal').classList.add('hidden');
+      if (activeWSTerm) activeWSTerm.close();
+      if (term) term.dispose();
+    }
+
+    // Submit Create Form
+    async function createApp(e) {
+      e.preventDefault();
+      const name = document.getElementById('app-name').value;
+      const git = document.getElementById('app-git').value;
+      const branch = document.getElementById('app-branch').value;
+      const domain = document.getElementById('app-domain').value;
+      const build_type = document.querySelector('input[name="build_type"]:checked').value;
+      const build_cmd = document.getElementById('app-build-cmd').value;
+      const run_cmd = document.getElementById('app-run-cmd').value;
+      
+      // Parse env variables textarea
+      const envText = document.getElementById('app-env-vars').value;
+      const lines = envText.split('\n');
+      const env_vars = {};
+      lines.forEach(line => {
+        const cleanLine = line.trim();
+        if (cleanLine && cleanLine.includes('=')) {
+          const idx = cleanLine.indexOf('=');
+          const key = cleanLine.substring(0, idx).trim();
+          const val = cleanLine.substring(idx + 1).trim();
+          if (key) {
+            env_vars[key] = val;
+          }
+        }
+      });
+
+      try {
+        const res = await fetch('/api/apps', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name,
+            git_repo: git,
+            git_branch: branch,
+            build_type,
+            build_command: build_cmd,
+            run_command: run_cmd,
+            domain,
+            env_vars
+          })
+        });
+
+        if (res.ok) {
+          const app = await res.json();
+          showTab('apps');
+          loadApps();
+          deployApp(app.id);
+        } else {
+          alert("Failed to create application");
+        }
+      } catch (err) {
+        alert("Network error creating app: " + err.message);
+      }
+    }
+
+    // Initial Load
+    window.onload = function() {
+      lucide.createIcons();
+      loadApps();
+    }
+  </script>
+</body>
+</html>

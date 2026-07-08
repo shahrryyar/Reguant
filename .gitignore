@@ -1,0 +1,23 @@
+# Reguant Binaries
+reguant
+bin/
+
+# Databases
+*.db
+*.db-wal
+*.db-shm
+
+# Local config & variables
+.env
+.env.local
+
+# Build artifacts & temp logs
+logs/
+apps/
+
+# Go dependency directory (if vendored)
+vendor/
+
+# OS specific files
+.DS_Store
+Thumbs.db
