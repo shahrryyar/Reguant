@@ -70,6 +70,18 @@ func Start(addr string, db *sql.DB) error {
 		w.Write([]byte(`{"status":"healthy","uptime":"online"}`))
 	})
 
+	// Serve Static Dashboard Files (convenient for local debugging)
+	if _, err := os.Stat("dashboard/dist"); err == nil {
+		fileServer := http.FileServer(http.Dir("dashboard/dist"))
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, ".") {
+				fileServer.ServeHTTP(w, r)
+			} else {
+				http.ServeFile(w, r, "dashboard/dist/index.html")
+			}
+		})
+	}
+
 	// CORS middleware
 	corsMux := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
