@@ -39,6 +39,10 @@ Reguant uses standard environment variables for configuration. You can supply th
 | `REGUANT_APPS_DIR` | Path to clone application source codes | `/var/lib/reguant/apps` |
 | `REGUANT_LOGS_DIR` | Path to store build logs | `/var/lib/reguant/logs` |
 | `REGUANT_NGINX_DIR` | Path to configure Nginx configurations | `/etc/nginx/sites-enabled` |
+| `REGUANT_API_TOKEN` | **Required for secure deployments.** Shared secret for the API and WebSockets (Bearer token / session cookie) | _(empty = unauthenticated)_ |
+| `REGUANT_CORS_ORIGIN` | Allowed CORS origin for the API (e.g. `https://dash.example.com`) | _(empty = same-origin when a token is set)_ |
+| `REGUANT_GITHUB_OAUTH_CLIENT_ID` | GitHub OAuth app client ID (enables dashboard "Sign in") | _(empty = disabled)_ |
+| `REGUANT_GITHUB_OAUTH_CLIENT_SECRET` | GitHub OAuth app client secret | _(empty = disabled)_ |
 
 ---
 
@@ -106,7 +110,45 @@ To trigger deployments automatically when pushing code:
 
 When code is pushed, GitHub sends a POST request. Reguant verifies the signature (if a secret is configured), parses the repository URL and branch, checks for a match in the local SQLite database, and automatically builds/deploys the updates with zero downtime.
 
-> **🔒 Security:** The Reguant API, terminal websocket, and webhook endpoint have **no built-in authentication**. Only expose them behind a trusted reverse proxy with access control (e.g. HTTP Basic Auth, or Cloudflare Access / Zero Trust in front of the dashboard). Always set `REGUANT_GITHUB_WEBHOOK_SECRET` so external callers cannot spoof deploys.
+> **🔒 Security:** The Reguant API, terminal websocket, and webhook endpoint are protected by built-in authentication — see [Security & Authentication](#-security--authentication). At minimum set `REGUANT_API_TOKEN` and `REGUANT_GITHUB_WEBHOOK_SECRET`. Even with auth enabled, always run behind TLS (a reverse proxy such as Caddy/Nginx) and never expose the daemon directly to the public internet.
+
+---
+
+## 🔐 Security & Authentication
+
+Reguant now ships with built-in authentication for its control plane. **It is off by default for backward compatibility, but you MUST enable it on any exposed deployment.**
+
+### API Token (recommended)
+Set a shared secret; every API call and WebSocket (terminal, logs, stats) then requires it. The bundled dashboard reads the token automatically, so no UI change is needed.
+
+```bash
+export REGUANT_API_TOKEN="$(openssl rand -hex 32)"   # any long random string
+```
+
+Clients authenticate with `Authorization: Bearer <token>`, or — for browser sessions — by logging in via GitHub OAuth (below), which sets an `httpOnly` session cookie. The terminal WebSocket (a remote shell into your app) is gated by this token, so it is no longer an open RCE surface.
+
+### GitHub OAuth Login (optional, browser-friendly)
+Instead of copy-pasting a token, operators can sign in with GitHub. Create an OAuth app, then:
+
+```bash
+export REGUANT_GITHUB_OAUTH_CLIENT_ID="your-github-oauth-client-id"
+export REGUANT_GITHUB_OAUTH_CLIENT_SECRET="your-github-oauth-secret"
+# Callback URL to register in the GitHub app:
+#   https://<YOUR_DOMAIN>/api/auth/github/callback
+```
+
+Visiting **Sign in** in the dashboard redirects to GitHub; on success a session cookie is issued. Use `/api/auth/logout` to clear it. (`REGUANT_API_TOKEN` must still be set — OAuth is just a convenient way to obtain the session cookie that equals it.)
+
+### Webhook HMAC
+As above, set `REGUANT_GITHUB_WEBHOOK_SECRET` so push webhooks are HMAC-verified (`X-Hub-Signature-256`).
+
+### Hardening extras (applied automatically)
+- **CORS** defaults to same-origin when a token is set; restrict further with `REGUANT_CORS_ORIGIN=https://your-domain`.
+- **Security headers**: baseline CSP, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`.
+- **Rate limiting** on all `/api/*` endpoints (per-IP, dependency-free).
+- **Webhook body capped** at 5 MiB to bound memory.
+
+> Run the daemon behind TLS. The token/OAuth cookie is only as safe as the transport — terminate HTTPS at a reverse proxy and bind Reguant to localhost.
 
 ---
 
