@@ -22,7 +22,17 @@ func (n *NginxManager) ConfigureProxy(appName string, domain string, port int) e
 	if domain == "" {
 		return nil
 	}
+	if _, err := n.writeProxyConfig(appName, domain, port); err != nil {
+		return err
+	}
+	return n.ReloadNginx()
+}
 
+// writeProxyConfig renders the Nginx virtual host file for an app and writes it
+// to disk. It does not reload Nginx, which lets the deployer reuse it during a
+// zero-downtime swap (repoint the upstream, then reload once) and lets tests
+// assert on the rendered content without an nginx binary present.
+func (n *NginxManager) writeProxyConfig(appName, domain string, port int) (string, error) {
 	configContent := fmt.Sprintf(`server {
     listen 80;
     server_name %s;
@@ -45,14 +55,14 @@ func (n *NginxManager) ConfigureProxy(appName string, domain string, port int) e
 
 	// Ensure the config directory exists
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
-		return fmt.Errorf("failed to create Nginx config directory: %w", err)
+		return "", fmt.Errorf("failed to create Nginx config directory: %w", err)
 	}
 
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
-		return fmt.Errorf("failed to write Nginx configuration file: %w", err)
+		return "", fmt.Errorf("failed to write Nginx configuration file: %w", err)
 	}
 
-	return n.ReloadNginx()
+	return configPath, nil
 }
 
 // DeleteProxy deletes the Nginx virtual host configuration file for an application and reloads Nginx.
