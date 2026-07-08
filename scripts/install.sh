@@ -26,6 +26,10 @@ echo -e "\n${BLUE}[1/5] Installing core server dependencies...${NC}"
 apt-get update
 apt-get install -y curl git wget build-essential Nginx certbot python3-certbot-nginx jq
 
+# Enable auto-renewing certbot SSL timer
+systemctl enable certbot.timer || true
+systemctl start certbot.timer || true
+
 # 2. Check & Install Docker
 if ! command -v docker &> /dev/null; then
   echo -e "${BLUE}Installing Docker Engine...${NC}"
