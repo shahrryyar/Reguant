@@ -240,10 +240,22 @@ func (d *Deployer) deployDocker(ctx context.Context, depID string, app *Applicat
 	}
 
 	updateLogs("Health check passed. Swapping Nginx proxy upstream...\n")
-	// TODO: Update Nginx configs to point to tempPort, reload Nginx
-	// For testing, we simulate swap by moving containers.
+	// A container's published port mapping is fixed at `docker run` time and
+	// cannot be changed by renaming, so the promoted container keeps listening
+	// on tempPort. We must repoint the Nginx upstream to the live port.
 	_ = exec.Command("docker", "rm", "-f", containerNameActive).Run()
-	_ = exec.Command("docker", "rename", containerNameTemp, containerNameActive).Run()
+	if err := exec.Command("docker", "rename", containerNameTemp, containerNameActive).Run(); err != nil {
+		return fmt.Errorf("failed to promote staging container: %w", err)
+	}
+
+	if app.Domain != "" {
+		nginx := proxy.NewNginxManager(d.cfg)
+		if err := nginx.ConfigureProxy(app.Name, app.Domain, tempPort); err != nil {
+			return fmt.Errorf("failed to repoint Nginx upstream to %d: %w", tempPort, err)
+		}
+	}
+	// Persist the live port so subsequent deploys and the dashboard stay consistent.
+	_, _ = d.db.Exec(`UPDATE applications SET port = ? WHERE id = ?`, tempPort, app.ID)
 
 	updateLogs("Routing swap complete. Cleaning up old resources...\n")
 	return nil

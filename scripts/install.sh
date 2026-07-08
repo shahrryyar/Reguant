@@ -43,7 +43,7 @@ fi
 # 3. Check & Install Go (Golang)
 if ! command -v go &> /dev/null; then
   echo -e "${BLUE}Golang not found. Installing latest stable Go version...${NC}"
-  GO_VERSION="1.22.0"
+  GO_VERSION="1.25.0"
   wget "https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz" -O go.tar.gz
   rm -rf /usr/local/go
   tar -C /usr/local -xzf go.tar.gz
@@ -62,12 +62,33 @@ mkdir -p /var/lib/reguant/logs
 mkdir -p /var/lib/reguant/ssl
 mkdir -p /etc/nginx/sites-enabled
 
+# Create the unprivileged runtime user that deployed applications run as
+if ! id -u reguant-apps >/dev/null 2>&1; then
+  useradd --system --no-create-home --shell /usr/sbin/nologin reguant-apps
+fi
+chown -R reguant-apps:reguant-apps /var/lib/reguant/apps /var/lib/reguant/logs
+
 # 5. Build Reguant Binary
 echo -e "\n${BLUE}[3/5] Resolving Go packages and building Reguant...${NC}"
-cd "$(dirname "$0")/.."
+# Resolve repository directory (works for cloned checkouts and piped installs)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# When installed via the curl pipe there is no local checkout; clone the source.
+if [ ! -f "$REPO_DIR/go.mod" ]; then
+  echo -e "${BLUE}Source not found locally; cloning Reguant repository...${NC}"
+  CLONE_TMP="$(mktemp -d)"
+  git clone --depth 1 https://github.com/shahrryyar/Reguant.git "$CLONE_TMP/Reguant"
+  REPO_DIR="$CLONE_TMP/Reguant"
+fi
+cd "$REPO_DIR"
 go mod tidy
 go build -o /usr/local/bin/reguant cmd/reguant/main.go
 echo -e "${GREEN}Reguant binary built and installed to /usr/local/bin/reguant.${NC}"
+
+# Deploy the dashboard SPA assets served by Nginx in production
+mkdir -p /var/lib/reguant/dashboard
+cp -r "$REPO_DIR/dashboard/dist/." /var/lib/reguant/dashboard/dist/ 2>/dev/null \
+  || echo -e "${BLUE}Note: dashboard/dist not present; build the dashboard or serve in dev mode.${NC}"
 
 # 6. Configure Systemd Service for Reguant Daemon
 echo -e "\n${BLUE}[4/5] Creating Systemd service for Reguant daemon...${NC}"
