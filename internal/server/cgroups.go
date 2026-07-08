@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -98,23 +99,30 @@ func readCPUStat(cgroupPath string) (int64, error) {
 }
 
 // findDockerCgroupPath searches system.slice to match the docker container scope
+// findDockerCgroupPath searches system.slice to match the docker container scope
 func findDockerCgroupPath(appID string) string {
-	// Look inside system.slice or /sys/fs/cgroup/system.slice/
-	basePath := "/sys/fs/cgroup/system.slice"
-	files, err := os.ReadDir(basePath)
+	containerName := fmt.Sprintf("reguant-%s", appID)
+	out, err := exec.Command("docker", "inspect", containerName, "--format", "{{.Id}}").Output()
 	if err != nil {
 		return ""
 	}
 
-	// We are looking for something like "docker-<hash>.scope"
-	// To be accurate, we can check if it exists
-	for _, file := range files {
-		if strings.HasPrefix(file.Name(), "docker-") && strings.HasSuffix(file.Name(), ".scope") {
-			// This matches a docker container. We can check if it relates to our app ID
-			// In our setup, container starts with reguant-<appID>
-			// Let's assume it maps correctly.
-			return filepath.Join(basePath, file.Name())
-		}
+	containerID := strings.TrimSpace(string(out))
+	if containerID == "" {
+		return ""
 	}
+
+	// 1. Try systemd-managed scope
+	path1 := fmt.Sprintf("/sys/fs/cgroup/system.slice/docker-%s.scope", containerID)
+	if _, err := os.Stat(path1); err == nil {
+		return path1
+	}
+
+	// 2. Try cgroupfs-managed scope
+	path2 := fmt.Sprintf("/sys/fs/cgroup/docker/%s", containerID)
+	if _, err := os.Stat(path2); err == nil {
+		return path2
+	}
+
 	return ""
 }

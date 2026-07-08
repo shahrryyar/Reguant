@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -55,9 +56,24 @@ func StartBackupScheduler(ctx context.Context, dbPath string, cfg BackupConfig) 
 
 // uploadBackupToS3 runs a lightweight HTTP PUT backup to the S3-compatible service using pure Go (saving ~30MB memory vs AWS SDK).
 func uploadBackupToS3(dbPath string, cfg BackupConfig) error {
-	file, err := os.Open(dbPath)
+	tempBackupPath := dbPath + ".backup"
+	defer os.Remove(tempBackupPath)
+
+	// Execute VACUUM INTO to safely checkpoint WAL frames and create a transactionally consistent copy of the active DB
+	dbConn, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		return fmt.Errorf("failed to open database file: %w", err)
+		return fmt.Errorf("failed to open database connection for backup: %w", err)
+	}
+	defer dbConn.Close()
+
+	_, err = dbConn.Exec(fmt.Sprintf("VACUUM INTO '%s';", tempBackupPath))
+	if err != nil {
+		return fmt.Errorf("VACUUM INTO execution failed: %w", err)
+	}
+
+	file, err := os.Open(tempBackupPath)
+	if err != nil {
+		return fmt.Errorf("failed to open backup database file: %w", err)
 	}
 	defer file.Close()
 

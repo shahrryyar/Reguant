@@ -2,15 +2,19 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -36,19 +40,27 @@ type Server struct {
 	cpuUsage  float64
 	memUsage  float64
 	lastStatT time.Time
+
+	// Application-specific resource stats cache
+	appStatsMu    sync.RWMutex
+	appStatsCache map[string]AppResourceStats
 }
 
 func Start(addr string, db *sql.DB) error {
 	cfg := config.Load()
 	srv := &Server{
-		db:       db,
-		cfg:      cfg,
-		deployer: deployer.NewDeployer(db, cfg),
-		proxy:    proxy.NewNginxManager(cfg),
+		db:            db,
+		cfg:           cfg,
+		deployer:      deployer.NewDeployer(db, cfg),
+		proxy:         proxy.NewNginxManager(cfg),
+		appStatsCache: make(map[string]AppResourceStats),
 	}
 
 	// Start system metrics gathering routine
 	go srv.statsGathererLoop()
+
+	// Start background applications resource polling routine
+	go srv.appStatsPollLoop()
 
 	mux := http.NewServeMux()
 
@@ -94,7 +106,28 @@ func Start(addr string, db *sql.DB) error {
 		mux.ServeHTTP(w, r)
 	})
 
-	return http.ListenAndServe(addr, corsMux)
+	srvConn := &http.Server{
+		Addr:    addr,
+		Handler: corsMux,
+	}
+
+	// Run http listener in a goroutine
+	go func() {
+		log.Printf("Reguant API Backend listening on %s...", addr)
+		if err := srvConn.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("Server ListenAndServe error: %v", err)
+		}
+	}()
+
+	// Listen for operating system shutdown interrupts
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	<-sigChan
+	log.Println("Received shutdown signal. Gracefully closing active connections...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return srvConn.Shutdown(ctx)
 }
 
 // REST: /api/apps (GET list, POST create, DELETE remove)
@@ -140,6 +173,22 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
+		}
+
+		// Validate Application Name (prevent Nginx config path traversal/injection)
+		nameRegex := regexp.MustCompile(`^[a-zA-Z0-9-_]+$`)
+		if !nameRegex.MatchString(req.Name) {
+			http.Error(w, "Invalid application name: must contain only alphanumeric, dashes, and underscores", http.StatusBadRequest)
+			return
+		}
+
+		// Validate Domain if bound (prevent Nginx block injection)
+		if req.Domain != "" {
+			domainRegex := regexp.MustCompile(`^[a-zA-Z0-9.-]+$`)
+			if !domainRegex.MatchString(req.Domain) {
+				http.Error(w, "Invalid domain name format", http.StatusBadRequest)
+				return
+			}
 		}
 
 		// Auto allocate free port
@@ -312,21 +361,12 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 
 // REST: /api/apps/stats (GET resource consumption for all apps)
 func (s *Server) handleAppStats(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.Query("SELECT id FROM applications")
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
+	s.appStatsMu.RLock()
+	defer s.appStatsMu.RUnlock()
 
-	var statsList []AppResourceStats
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err == nil {
-			if stats, err := GetAppResourceStats(s.db, id); err == nil {
-				statsList = append(statsList, stats)
-			}
-		}
+	statsList := make([]AppResourceStats, 0, len(s.appStatsCache))
+	for _, stats := range s.appStatsCache {
+		statsList = append(statsList, stats)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -348,30 +388,53 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	var lastLogsLength int
-	for {
-		var logs string
-		var status string
-		err := s.db.QueryRow("SELECT status, logs FROM deployments WHERE id = ?", depID).Scan(&status, &logs)
-		if err != nil {
-			break
-		}
-
-		if len(logs) > lastLogsLength {
-			newLogs := logs[lastLogsLength:]
-			err = conn.WriteMessage(websocket.TextMessage, []byte(newLogs))
-			if err != nil {
+	// Spawn background reader to process Close/Ping control frames
+	go func() {
+		for {
+			if _, _, err := conn.NextReader(); err != nil {
+				conn.Close()
 				break
 			}
-			lastLogsLength = len(logs)
 		}
+	}()
 
-		if status == "success" || status == "failed" {
-			_ = conn.WriteMessage(websocket.TextMessage, []byte("\n--- Deployment Finished ---\n"))
-			break
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	var lastLogsLength int
+	for {
+		select {
+		case <-ticker.C:
+			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		default:
+			var logs string
+			var status string
+			err := s.db.QueryRow("SELECT status, logs FROM deployments WHERE id = ?", depID).Scan(&status, &logs)
+			if err != nil {
+				return
+			}
+
+			if len(logs) > lastLogsLength {
+				newLogs := logs[lastLogsLength:]
+				conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				err = conn.WriteMessage(websocket.TextMessage, []byte(newLogs))
+				if err != nil {
+					return
+				}
+				lastLogsLength = len(logs)
+			}
+
+			if status == "success" || status == "failed" {
+				conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				_ = conn.WriteMessage(websocket.TextMessage, []byte("\n--- Deployment Finished ---\n"))
+				return
+			}
+
+			time.Sleep(500 * time.Millisecond)
 		}
-
-		time.Sleep(500 * time.Millisecond)
 	}
 }
 
@@ -384,19 +447,41 @@ func (s *Server) handleWSStats(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	for {
-		s.statsMu.RLock()
-		cpu := s.cpuUsage
-		mem := s.memUsage
-		s.statsMu.RUnlock()
-
-		payload := fmt.Sprintf(`{"cpu":%.2f,"mem":%.2f}`, cpu, mem)
-		err = conn.WriteMessage(websocket.TextMessage, []byte(payload))
-		if err != nil {
-			break
+	// Spawn background reader to process Close/Ping control frames
+	go func() {
+		for {
+			if _, _, err := conn.NextReader(); err != nil {
+				conn.Close()
+				break
+			}
 		}
+	}()
 
-		time.Sleep(1 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		default:
+			s.statsMu.RLock()
+			cpu := s.cpuUsage
+			mem := s.memUsage
+			s.statsMu.RUnlock()
+
+			payload := fmt.Sprintf(`{"cpu":%.2f,"mem":%.2f}`, cpu, mem)
+			conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+			err = conn.WriteMessage(websocket.TextMessage, []byte(payload))
+			if err != nil {
+				return
+			}
+
+			time.Sleep(1 * time.Second)
+		}
 	}
 }
 
@@ -471,4 +556,57 @@ func readSystemStats(prevIdle, prevTotal uint64) (cpuPercent, memPercent float64
 	}
 
 	return cpuPercent, memPercent, idle, total
+}
+
+func (s *Server) appStatsPollLoop() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	// Initial poll on startup
+	s.pollAppsStats()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.pollAppsStats()
+		}
+	}
+}
+
+func (s *Server) pollAppsStats() {
+	rows, err := s.db.Query("SELECT id FROM applications")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	var appIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			appIDs = append(appIDs, id)
+		}
+	}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	tempCache := make(map[string]AppResourceStats)
+
+	for _, id := range appIDs {
+		wg.Add(1)
+		go func(appID string) {
+			defer wg.Done()
+			if stats, err := GetAppResourceStats(s.db, appID); err == nil {
+				mu.Lock()
+				tempCache[appID] = stats
+				mu.Unlock()
+			}
+		}(id)
+	}
+
+	wg.Wait()
+
+	s.appStatsMu.Lock()
+	s.appStatsCache = tempCache
+	s.appStatsMu.Unlock()
 }

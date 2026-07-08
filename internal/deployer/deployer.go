@@ -141,7 +141,7 @@ func (d *Deployer) runDeploymentPipeline(ctx context.Context, depID, appID strin
 	// Step 1: Git Clone / Fetch & Checkout
 	if _, err := os.Stat(appDir); os.IsNotExist(err) {
 		updateStatus("building", fmt.Sprintf("Cloning repository: %s (branch: %s)...\n", app.GitRepo, app.GitBranch))
-		err = d.runCmd(ctx, depID, "", "git", "clone", "-b", app.GitBranch, app.GitRepo, appDir)
+		err = d.runCmd(ctx, depID, "", "git", "clone", "-b", app.GitBranch, "--", app.GitRepo, appDir)
 		if err != nil {
 			updateStatus("failed", "Git clone failed.\n")
 			updateAppStatus("failed")
@@ -285,12 +285,26 @@ Type=simple
 WorkingDirectory=%s
 ExecStart=%s
 Restart=always
-User=root
+User=reguant-apps
+Group=reguant-apps
+
+# Sandboxing & Resource Isolation
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=%s
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+MemoryMax=250M
+MemoryHigh=200M
+CPUQuota=50%%
+
 %s
 
 [Install]
 WantedBy=multi-user.target
-`, app.Name, appDir, app.RunCommand, strings.Join(envStrings, "\n"))
+`, app.Name, appDir, app.RunCommand, appDir, strings.Join(envStrings, "\n"))
 
 	// Write systemd file (Requires sudo/admin permissions on VPS)
 	err := os.WriteFile(servicePath, []byte(serviceConfig), 0644)

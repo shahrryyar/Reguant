@@ -2,7 +2,6 @@ package server
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os/exec"
@@ -61,18 +60,13 @@ func (s *Server) handleWSTerminal(w http.ResponseWriter, r *http.Request) {
 		_ = cmd.Wait()
 	}()
 
-	// Channel to signal output loop exits
-	done := make(chan struct{})
-
 	// Loop 1: Read from PTY terminal and write to WebSocket
 	go func() {
+		defer conn.Close() // Close connection symmetrically if shell exits, breaking Loop 2
 		buf := make([]byte, 1024)
 		for {
 			n, err := f.Read(buf)
 			if err != nil {
-				if err != io.EOF {
-					log.Println("PTY read error:", err)
-				}
 				break
 			}
 			err = conn.WriteMessage(websocket.BinaryMessage, buf[:n])
@@ -80,23 +74,17 @@ func (s *Server) handleWSTerminal(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
-		close(done)
 	}()
 
 	// Loop 2: Read from WebSocket and write to PTY terminal
 	for {
-		select {
-		case <-done:
-			return
-		default:
-			_, msg, err := conn.ReadMessage()
-			if err != nil {
-				return
-			}
-			_, err = f.Write(msg)
-			if err != nil {
-				return
-			}
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			break // Exits immediately when the websocket is closed
+		}
+		_, err = f.Write(msg)
+		if err != nil {
+			break
 		}
 	}
 }

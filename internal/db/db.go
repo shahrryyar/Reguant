@@ -22,6 +22,7 @@ func Init(dbPath string) (*sql.DB, error) {
 		"PRAGMA cache_size = -4000;", // Cache ~4MB of pages in RAM
 		"PRAGMA temp_store = MEMORY;",
 		"PRAGMA foreign_keys = ON;",
+		"PRAGMA busy_timeout = 5000;", // Wait up to 5s for database locks to release
 	}
 
 	for _, pragma := range pragmas {
