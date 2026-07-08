@@ -76,11 +76,13 @@ Reguant is built for automated git-push deployments.
 
 ### 1. Git Authentication (Public vs. Private Repositories)
 - **Public Repositories**: No authentication parameters or tokens are required. Simply register the repository's HTTPS clone link (e.g. `https://github.com/user/repo`).
-- **Private Repositories**: To keep access tokens out of the codebase, Reguant leverages native SSH keys on the host machine.
-  1. Generate an SSH keypair on your VPS: `ssh-keygen -t ed25519`
-  2. Copy the public key: `cat ~/.ssh/id_ed25519.pub`
-  3. On GitHub, navigate to your repository -> **Settings** -> **Deploy Keys** -> **Add deploy key** and paste the key (granting read access).
+- **Private Repositories**: To keep access tokens out of the codebase, Reguant authenticates with native SSH deploy keys — **no GitHub token or GitHub App is required**.
+  1. Generate an SSH keypair on the host: `ssh-keygen -t ed25519` (leave the passphrase empty so automated deploys never block on a prompt).
+  2. Copy the public key: `cat ~/.ssh/id_ed25519.pub`.
+  3. On GitHub, navigate to your repository -> **Settings** -> **Deploy Keys** -> **Add deploy key** and paste the key with **read-only** access.
   4. Register the repository using its SSH clone link (e.g. `git@github.com:user/repo.git`) inside the Reguant dashboard.
+
+  **Key ownership matters:** Git runs as the same OS user that runs the Reguant daemon. The bundled systemd unit runs as **root**, so the key must live at `/root/.ssh/id_ed25519` (or run the service as your chosen user and place the key there). Reguant auto-accepts GitHub's SSH host key on first contact (`StrictHostKeyChecking=accept-new`), so you do **not** need to pre-seed `known_hosts` manually.
 
 ### 2. Automated GitOps Webhooks
 To trigger deployments automatically when pushing code:

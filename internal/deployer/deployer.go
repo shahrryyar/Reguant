@@ -338,7 +338,14 @@ WantedBy=multi-user.target
 
 func (d *Deployer) runCmd(ctx context.Context, depID string, dir string, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=1")
+	cmd.Env = append(os.Environ(),
+		"DOCKER_BUILDKIT=1",
+		// Allow private Git repos over SSH: auto-accept GitHub's host key on
+		// first contact and never prompt for a passphrase (deploy keys are
+		// unencrypted). Cloning still fails fast if the key is missing or
+		// unauthorized.
+		"GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes",
+	)
 	if dir != "" {
 		cmd.Dir = dir
 	}
