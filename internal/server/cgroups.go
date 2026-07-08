@@ -12,10 +12,10 @@ import (
 )
 
 type AppResourceStats struct {
-	AppID     string  `json:"app_id"`
-	AppName   string  `json:"app_name"`
-	MemoryMB  float64 `json:"memory_mb"`
-	CPUUsage  float64 `json:"cpu_usage"`
+	AppID    string  `json:"app_id"`
+	AppName  string  `json:"app_name"`
+	MemoryMB float64 `json:"memory_mb"`
+	CPUUsage float64 `json:"cpu_usage"`
 }
 
 // GetAppResourceStats queries cgroups v2 to calculate memory and CPU usage for an application.

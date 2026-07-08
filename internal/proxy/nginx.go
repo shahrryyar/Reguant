@@ -58,7 +58,7 @@ func (n *NginxManager) ConfigureProxy(appName string, domain string, port int) e
 // DeleteProxy deletes the Nginx virtual host configuration file for an application and reloads Nginx.
 func (n *NginxManager) DeleteProxy(appName string) error {
 	configPath := filepath.Join(n.cfg.NginxDir, fmt.Sprintf("reguant-%s.conf", appName))
-	
+
 	// Check if file exists before trying to delete
 	if _, err := os.Stat(configPath); err == nil {
 		if err := os.Remove(configPath); err != nil {
@@ -66,7 +66,7 @@ func (n *NginxManager) DeleteProxy(appName string) error {
 		}
 		return n.ReloadNginx()
 	}
-	
+
 	return nil
 }
 

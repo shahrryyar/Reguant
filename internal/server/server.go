@@ -30,7 +30,7 @@ type Server struct {
 	cfg      *config.Config
 	deployer *deployer.Deployer
 	proxy    *proxy.NginxManager
-	
+
 	// Real-time system stats cache
 	statsMu   sync.RWMutex
 	cpuUsage  float64
@@ -51,12 +51,12 @@ func Start(addr string, db *sql.DB) error {
 	go srv.statsGathererLoop()
 
 	mux := http.NewServeMux()
-	
+
 	// REST API Endpoints
 	mux.HandleFunc("/api/apps", srv.handleApps)
 	mux.HandleFunc("/api/apps/deploy", srv.handleDeploy)
 	mux.HandleFunc("/api/apps/stats", srv.handleAppStats)
-	mux.HandleFunc("/api/apps/env", srv.handleUpdateEnv)          // Update env vars
+	mux.HandleFunc("/api/apps/env", srv.handleUpdateEnv)            // Update env vars
 	mux.HandleFunc("/api/webhooks/github", srv.handleGitHubWebhook) // Auto deployment webhook
 
 	// WebSockets Endpoints
@@ -147,7 +147,7 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 			INSERT INTO applications (id, name, git_repo, git_branch, build_type, build_command, run_command, port, domain, env_vars, status)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle')`,
 			appID, req.Name, req.GitRepo, req.GitBranch, req.BuildType, req.BuildCommand, req.RunCommand, port, req.Domain, string(envVarsJSON))
-		
+
 		if err != nil {
 			http.Error(w, "Failed to save application: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -416,7 +416,7 @@ func readSystemStats(prevIdle, prevTotal uint64) (cpuPercent, memPercent float64
 			if len(fields) >= 5 && fields[0] == "cpu" {
 				var user, nice, system, idl, iowait, irq, softirq uint64
 				_, _ = fmt.Sscanf(strings.Join(fields[1:8], " "), "%d %d %d %d %d %d %d", &user, &nice, &system, &idl, &iowait, &irq, &softirq)
-				
+
 				idle = idl + iowait
 				total = user + nice + system + idl + iowait + irq + softirq
 

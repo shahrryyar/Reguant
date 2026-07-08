@@ -382,10 +382,10 @@ func (d *Deployer) Delete(appID string) error {
 	} else {
 		serviceName := fmt.Sprintf("reguant-%s", appID)
 		servicePath := fmt.Sprintf("/etc/systemd/system/%s.service", serviceName)
-		
+
 		_ = exec.Command("systemctl", "stop", serviceName).Run()
 		_ = exec.Command("systemctl", "disable", serviceName).Run()
-		
+
 		if _, err := os.Stat(servicePath); err == nil {
 			_ = os.Remove(servicePath)
 			_ = exec.Command("systemctl", "daemon-reload").Run()
