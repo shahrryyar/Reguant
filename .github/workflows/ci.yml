@@ -37,13 +37,17 @@ jobs:
       env:
         GOOS: linux
         GOARCH: amd64
-      run: go build -v -o bin/reguant-linux-amd64 ./cmd/reguant/main.go
+      run: |
+        mkdir -p bin
+        go build -v -o bin/reguant-linux-amd64 ./cmd/reguant/main.go
 
     - name: Build Reguant Daemon (Linux ARM64)
       env:
         GOOS: linux
         GOARCH: arm64
-      run: go build -v -o bin/reguant-linux-arm64 ./cmd/reguant/main.go
+      run: |
+        mkdir -p bin
+        go build -v -o bin/reguant-linux-arm64 ./cmd/reguant/main.go
 
     - name: Upload Build Artifacts
       uses: actions/upload-artifact@v4
