@@ -322,8 +322,14 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	// Bound the body read so a large/unbounded POST cannot exhaust the RAM budget.
+	const maxWebhookBody = 5 << 20 // 5 MiB; GitHub push payloads are far smaller
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBody))
 	if err != nil {
+		if strings.Contains(err.Error(), "request body too large") {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "Failed to read request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}

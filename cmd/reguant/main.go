@@ -6,7 +6,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/shahrryyar/reguant/internal/config"
@@ -31,7 +33,7 @@ func main() {
 	// Trigger restore operation and exit if requested
 	if *restoreFlag {
 		log.Println("Initializing database restore from offsite S3/R2 backup...")
-		if err := db.RestoreS3Backup(cfg.DBPath, s3Endpoint, s3Bucket, s3Access, s3Secret); err != nil {
+		if err := db.RestoreS3Backup(cfg.DBPath, s3Endpoint, s3Bucket, cfg.S3Region, s3Access, s3Secret, cfg.APIToken); err != nil {
 			log.Fatalf("Critical Error: Database restore failed: %v", err)
 		}
 		log.Println("Database successfully restored! Exiting.")
@@ -62,6 +64,10 @@ func main() {
 		}
 	}
 
+	// Root context cancelled on SIGINT/SIGTERM so background schedulers stop cleanly.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	// Start background S3 replication scheduler
 	if s3Endpoint != "" && s3Bucket != "" {
 		backupCfg := db.BackupConfig{
@@ -69,16 +75,18 @@ func main() {
 			BucketName: s3Bucket,
 			AccessKey:  s3Access,
 			SecretKey:  s3Secret,
+			Region:     cfg.S3Region,
+			APIToken:   cfg.APIToken,
 			Interval:   backupInterval,
 		}
-		go db.StartBackupScheduler(context.Background(), cfg.DBPath, backupCfg)
+		go db.StartBackupScheduler(ctx, cfg.DBPath, backupCfg)
 	}
 
 	// Start background database maintenance (log pruning and database vacuum)
-	go db.StartMaintenanceScheduler(context.Background(), database, 24*time.Hour)
+	go db.StartMaintenanceScheduler(ctx, database, 24*time.Hour)
 
 	// Start active application HTTP health monitoring
-	go deployer.StartAppMonitorScheduler(context.Background(), database, 60*time.Second)
+	go deployer.StartAppMonitorScheduler(ctx, database, 60*time.Second)
 
 	// Test status endpoint
 	http.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {

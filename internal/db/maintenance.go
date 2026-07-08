@@ -35,24 +35,15 @@ func StartMaintenanceScheduler(ctx context.Context, db *sql.DB, interval time.Du
 }
 
 // RestoreS3Backup downloads the latest database backup file from S3/R2 and overwrites the local db file.
-func RestoreS3Backup(dbPath string, s3Endpoint, bucketName, accessKey, secretKey string) error {
+func RestoreS3Backup(dbPath string, s3Endpoint, bucketName, region, accessKey, secretKey, apiToken string) error {
 	if s3Endpoint == "" || bucketName == "" {
 		return fmt.Errorf("S3 restore requires S3 endpoint and bucket configuration")
 	}
 
 	targetObject := "reguant_backup.db"
-	url := fmt.Sprintf("%s/%s/%s", s3Endpoint, bucketName, targetObject)
-
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := newSignedRequest("GET", s3Endpoint, region, bucketName, targetObject, accessKey, secretKey, apiToken, nil, 0)
 	if err != nil {
-		return fmt.Errorf("failed to create GET request: %w", err)
-	}
-
-	now := time.Now().UTC().Format(time.RFC1123)
-	req.Header.Set("Date", now)
-	if accessKey != "" && secretKey != "" {
-		signature := generateHMACSignature(now, secretKey)
-		req.Header.Set("Authorization", fmt.Sprintf("ReguantAuth %s:%s", accessKey, signature))
+		return fmt.Errorf("failed to build S3 request: %w", err)
 	}
 
 	client := &http.Client{Timeout: 5 * time.Minute}
@@ -67,7 +58,7 @@ func RestoreS3Backup(dbPath string, s3Endpoint, bucketName, accessKey, secretKey
 		return fmt.Errorf("S3 download returned bad status (%d): %s", resp.StatusCode, string(body))
 	}
 
-	// Write temp file first
+	// Write to a temp file first so a failed/corrupt download never clobbers the live DB.
 	tempPath := dbPath + ".tmp"
 	tempFile, err := os.OpenFile(tempPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
@@ -79,7 +70,12 @@ func RestoreS3Backup(dbPath string, s3Endpoint, bucketName, accessKey, secretKey
 		return fmt.Errorf("failed to write database content: %w", err)
 	}
 
-	// Rename temp file to target path
+	// Validate the downloaded file is a genuine SQLite database before replacing the live one.
+	if err := validateSQLiteFile(tempPath); err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("downloaded backup is not a valid SQLite database: %w", err)
+	}
+
 	if err := os.Rename(tempPath, dbPath); err != nil {
 		return fmt.Errorf("failed to replace target database: %w", err)
 	}
@@ -88,10 +84,30 @@ func RestoreS3Backup(dbPath string, s3Endpoint, bucketName, accessKey, secretKey
 	return nil
 }
 
+// validateSQLiteFile opens the file and runs an integrity check to ensure it is a
+// usable SQLite database before we trust it as the live DB.
+func validateSQLiteFile(path string) error {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if err := db.Ping(); err != nil {
+		return err
+	}
+	var check string
+	if err := db.QueryRow("PRAGMA integrity_check").Scan(&check); err != nil {
+		return err
+	}
+	if check != "ok" {
+		return fmt.Errorf("integrity_check reported: %s", check)
+	}
+	return nil
+}
+
 func pruneBuildLogs(db *sql.DB) error {
 	log.Println("Running log pruning routine...")
 
-	// Delete deployments that are not in the top 50 for each application
 	pruneQuery := `
 	DELETE FROM deployments 
 	WHERE id NOT IN (

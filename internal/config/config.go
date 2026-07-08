@@ -12,6 +12,7 @@ type Config struct {
 	NginxDir      string
 	WebhookSecret string
 	S3Region      string
+	APIToken      string
 }
 
 func Load() *Config {
@@ -23,6 +24,7 @@ func Load() *Config {
 		NginxDir:      getEnv("REGUANT_NGINX_DIR", "/etc/nginx/sites-enabled"),
 		WebhookSecret: getEnv("REGUANT_GITHUB_WEBHOOK_SECRET", ""),
 		S3Region:      getEnv("REGUANT_S3_REGION", "auto"),
+		APIToken:      getEnv("REGUANT_S3_TOKEN", ""),
 	}
 }
 

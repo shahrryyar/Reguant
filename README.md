@@ -52,12 +52,17 @@ To activate background database replication, set these environment variables whe
 ```bash
 export REGUANT_S3_ENDPOINT="https://<account-id>.r2.cloudflarestorage.com"
 export REGUANT_S3_BUCKET="my-backup-bucket"
+# Authentication (pick ONE):
+#  - Cloudflare R2 API token (recommended for R2):
+export REGUANT_S3_TOKEN="your-r2-api-token"
+#  - OR AWS Signature V4 access/secret keys (AWS S3, R2 S3 API, Backblaze B2):
 export REGUANT_S3_ACCESS_KEY="my-access-key-id"
 export REGUANT_S3_SECRET_KEY="my-secret-access-key"
+export REGUANT_S3_REGION="auto"          # R2 uses "auto"; AWS/B2 use e.g. us-east-1
 export REGUANT_S3_INTERVAL_MINUTES="30"  # Frequency of database replication
 ```
 
-When these keys are active, Reguant executes SQLite `VACUUM INTO` to create a transactionally consistent copy of the database, then uploads it to the S3 bucket.
+When the endpoint and bucket are set, Reguant executes SQLite `VACUUM INTO` to create a transactionally consistent copy of the database, then uploads it to the S3 bucket. Uploads use **AWS Signature Version 4** (when access/secret keys are provided) or an **R2 API-token Bearer** header (when `REGUANT_S3_TOKEN` is set). Buckets are addressed in virtual-hosted style (`https://<bucket>.<host>/<key>`), which is what AWS S3 requires. On restore, the downloaded file is integrity-checked before it replaces the live database.
 
 ### 2. Disasters Recovery Restoration
 If your VPS fails, you can spin up a replacement host and instantly restore your entire configuration by booting Reguant with the `--restore` flag:
@@ -92,9 +97,16 @@ To trigger deployments automatically when pushing code:
    http://<YOUR_VPS_IP>:<REGUANT_PORT>/api/webhooks/github
    ```
 3. Set the **Content type** to `application/json`.
-4. Choose **Just the push event** and save.
+4. **Recommended:** set a **Secret** (any random string). Export it on the Reguant host so deliveries are verified:
+   ```bash
+   export REGUANT_GITHUB_WEBHOOK_SECRET="your-webhook-secret"
+   ```
+   With this set, Reguant rejects any webhook whose `X-Hub-Signature-256` HMAC does not match (HTTP 401). If unset, the server logs a warning and still accepts unauthenticated webhooks — never run that way on an internet-exposed host.
+5. Choose **Just the push event** and save.
 
-When code is pushed, GitHub sends a POST request. Reguant parses the repository URL and branch, checks for a match in the local SQLite database, and automatically builds/deploys the updates with zero downtime.
+When code is pushed, GitHub sends a POST request. Reguant verifies the signature (if a secret is configured), parses the repository URL and branch, checks for a match in the local SQLite database, and automatically builds/deploys the updates with zero downtime.
+
+> **🔒 Security:** The Reguant API, terminal websocket, and webhook endpoint have **no built-in authentication**. Only expose them behind a trusted reverse proxy with access control (e.g. HTTP Basic Auth, or Cloudflare Access / Zero Trust in front of the dashboard). Always set `REGUANT_GITHUB_WEBHOOK_SECRET` so external callers cannot spoof deploys.
 
 ---
 
