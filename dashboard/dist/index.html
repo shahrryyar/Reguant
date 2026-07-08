@@ -95,6 +95,14 @@
         </button>
       </div>
 
+      <!-- Search and Filter Bar -->
+      <div class="relative max-w-md w-full">
+        <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none flex-col justify-center">
+          <i data-lucide="search" class="w-4 h-4 text-slate-400"></i>
+        </span>
+        <input type="text" id="search-apps" oninput="filterApps(this.value)" placeholder="Search applications by name, repo, or domain..." class="w-full bg-black/40 border border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-white focus:outline-none focus:border-brand transition-all text-sm">
+      </div>
+
       <!-- App Grid -->
       <div id="apps-grid" class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
         <!-- Loader Skeleton -->
@@ -322,67 +330,106 @@
 
     let globalAppsCache = [];
 
-    // Fetch and render Applications
+    // Fetch applications from the daemon
     async function loadApps() {
       try {
         const res = await fetch('/api/apps');
         const apps = await res.json();
         globalAppsCache = apps || [];
-        const grid = document.getElementById('apps-grid');
-        grid.innerHTML = '';
-
-        if (!apps || apps.length === 0) {
-          grid.innerHTML = `
-            <div class="col-span-full glass p-12 text-center rounded-3xl border border-white/5 space-y-4">
-              <i data-lucide="inbox" class="w-12 h-12 text-slate-500 mx-auto"></i>
-              <h3 class="font-bold text-lg text-slate-300">No applications deployed yet</h3>
-              <p class="text-sm text-slate-500">Create your first deployment by clicking the deploy button above.</p>
-            </div>
-          `;
-          lucide.createIcons();
-          return;
-        }
-
-        apps.forEach(app => {
-          const card = document.createElement('div');
-          card.className = 'glass p-6 rounded-2xl border border-white/5 glass-hover transition-all duration-300 flex flex-col justify-between';
-          card.innerHTML = `
-            <div class="space-y-3">
-              <div class="flex items-center justify-between">
-                <h3 class="font-bold text-lg text-white">${app.Name}</h3>
-                <div class="flex items-center gap-2">
-                  <span class="px-2.5 py-1 rounded-full text-xs font-bold ${
-                    app.BuildType === 'docker' ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20' : 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20'
-                  }">${app.BuildType}</span>
-                  <button onclick="deleteApp('${app.ID}', '${app.Name}')" class="text-rose-400 hover:text-rose-600 transition-colors p-1" title="Delete application">
-                    <i data-lucide="trash-2" class="w-4 h-4"></i>
-                  </button>
-                </div>
-              </div>
-              <p class="text-xs text-slate-400 truncate mono">${app.GitRepo}</p>
-              <div class="text-sm font-semibold text-slate-300 flex items-center gap-1.5">
-                <i data-lucide="link" class="w-3.5 h-3.5 text-brand"></i>
-                <a href="http://${app.Domain || '127.0.0.1:' + app.Port}" target="_blank" class="hover:underline">${app.Domain || 'Port: ' + app.Port}</a>
-              </div>
-            </div>
-            <div class="grid grid-cols-3 gap-2 mt-6">
-              <button onclick="deployApp('${app.ID}')" class="bg-white/5 hover:bg-brand hover:text-white border border-white/10 rounded-xl py-2 text-[11px] font-bold transition-all flex items-center justify-center gap-1">
-                <i data-lucide="refresh-cw" class="w-3 h-3"></i> Deploy
-              </button>
-              <button onclick="openTerminalModal('${app.ID}', '${app.Name}')" class="bg-cyan-500/5 hover:bg-cyan-500 hover:text-black border border-cyan-500/10 hover:border-cyan-500 rounded-xl py-2 text-[11px] font-bold transition-all flex items-center justify-center gap-1 text-cyan-400">
-                <i data-lucide="terminal" class="w-3 h-3"></i> Shell
-              </button>
-              <button onclick="openEnvModal('${app.ID}', '${app.Name}')" class="bg-indigo-500/5 hover:bg-indigo-500 hover:text-white border border-indigo-500/10 hover:border-indigo-500 rounded-xl py-2 text-[11px] font-bold transition-all flex items-center justify-center gap-1 text-indigo-400">
-                <i data-lucide="settings" class="w-3 h-3"></i> Env Vars
-              </button>
-            </div>
-          `;
-          grid.appendChild(card);
-        });
-        lucide.createIcons();
+        renderApps(globalAppsCache);
       } catch (err) {
         console.error("Failed to load apps:", err);
       }
+    }
+
+    // Filter applications using search query
+    function filterApps(query) {
+      const q = query.toLowerCase().trim();
+      if (!q) {
+        renderApps(globalAppsCache);
+        return;
+      }
+      const filtered = globalAppsCache.filter(app => 
+        app.Name.toLowerCase().includes(q) || 
+        app.GitRepo.toLowerCase().includes(q) || 
+        (app.Domain && app.Domain.toLowerCase().includes(q))
+      );
+      renderApps(filtered);
+    }
+
+    // Render applications into the dashboard grid
+    function renderApps(apps) {
+      const grid = document.getElementById('apps-grid');
+      grid.innerHTML = '';
+
+      if (!apps || apps.length === 0) {
+        grid.innerHTML = `
+          <div class="col-span-full glass p-12 text-center rounded-3xl border border-white/5 space-y-4">
+            <i data-lucide="inbox" class="w-12 h-12 text-slate-500 mx-auto"></i>
+            <h3 class="font-bold text-lg text-slate-300">No applications matched</h3>
+            <p class="text-sm text-slate-500">Create a new deployment or refine your search input.</p>
+          </div>
+        `;
+        lucide.createIcons();
+        return;
+      }
+
+      apps.forEach(app => {
+        const card = document.createElement('div');
+        card.className = 'glass p-6 rounded-2xl border border-white/5 glass-hover transition-all duration-300 flex flex-col justify-between';
+        
+        // Compute Status Badge
+        let statusBadge = '';
+        const appStatus = (app.Status || 'idle').toLowerCase();
+        if (appStatus === 'running') {
+          statusBadge = `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"><span class="w-1 h-1 rounded-full bg-emerald-400"></span>running</span>`;
+        } else if (appStatus === 'deploying') {
+          statusBadge = `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20"><span class="w-1 h-1 rounded-full bg-amber-400 animate-pulse"></span>deploying</span>`;
+        } else if (appStatus === 'failed') {
+          statusBadge = `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20"><span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>failed</span>`;
+        } else if (appStatus === 'offline') {
+          statusBadge = `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-500/10 text-slate-400 border border-slate-500/20"><span class="w-1 h-1 rounded-full bg-slate-400"></span>offline</span>`;
+        } else {
+          statusBadge = `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-500/10 text-slate-400 border border-slate-500/20"><span class="w-1 h-1 rounded-full bg-slate-400"></span>${appStatus}</span>`;
+        }
+
+        card.innerHTML = `
+          <div class="space-y-3">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2 truncate">
+                <h3 class="font-bold text-lg text-white truncate" title="${app.Name}">${app.Name}</h3>
+                ${statusBadge}
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                  app.BuildType === 'docker' ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20' : 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20'
+                }">${app.BuildType}</span>
+                <button onclick="deleteApp('${app.ID}', '${app.Name}')" class="text-rose-400 hover:text-rose-600 transition-colors p-1" title="Delete application">
+                  <i data-lucide="trash-2" class="w-4 h-4"></i>
+                </button>
+              </div>
+            </div>
+            <p class="text-xs text-slate-400 truncate mono">${app.GitRepo}</p>
+            <div class="text-sm font-semibold text-slate-300 flex items-center gap-1.5">
+              <i data-lucide="link" class="w-3.5 h-3.5 text-brand"></i>
+              <a href="http://${app.Domain || '127.0.0.1:' + app.Port}" target="_blank" class="hover:underline">${app.Domain || 'Port: ' + app.Port}</a>
+            </div>
+          </div>
+          <div class="grid grid-cols-3 gap-2 mt-6">
+            <button onclick="deployApp('${app.ID}')" class="bg-white/5 hover:bg-brand hover:text-white border border-white/10 rounded-xl py-2 text-[11px] font-bold transition-all flex items-center justify-center gap-1">
+              <i data-lucide="refresh-cw" class="w-3 h-3"></i> Deploy
+            </button>
+            <button onclick="openTerminalModal('${app.ID}', '${app.Name}')" class="bg-cyan-500/5 hover:bg-cyan-500 hover:text-black border border-cyan-500/10 hover:border-cyan-500 rounded-xl py-2 text-[11px] font-bold transition-all flex items-center justify-center gap-1 text-cyan-400">
+              <i data-lucide="terminal" class="w-3 h-3"></i> Shell
+            </button>
+            <button onclick="openEnvModal('${app.ID}', '${app.Name}')" class="bg-indigo-500/5 hover:bg-indigo-500 hover:text-white border border-indigo-500/10 hover:border-indigo-500 rounded-xl py-2 text-[11px] font-bold transition-all flex items-center justify-center gap-1 text-indigo-400">
+              <i data-lucide="settings" class="w-3 h-3"></i> Env Vars
+            </button>
+          </div>
+        `;
+        grid.appendChild(card);
+      });
+      lucide.createIcons();
     }
 
     // Deploy Application Logs Modal
