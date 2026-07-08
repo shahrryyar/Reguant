@@ -40,6 +40,7 @@ type Application struct {
 	Domain       string
 	SSLEnabled   bool
 	EnvVars      string
+	Status       string
 }
 
 func NewDeployer(db *sql.DB, cfg *config.Config) *Deployer {
