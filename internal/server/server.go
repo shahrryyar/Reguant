@@ -34,10 +34,12 @@ var upgrader = websocket.Upgrader{
 }
 
 type Server struct {
-	db       *sql.DB
-	cfg      *config.Config
-	deployer *deployer.Deployer
-	proxy    *proxy.NginxManager
+	db            *sql.DB
+	cfg           *config.Config
+	deployer      *deployer.Deployer
+	proxy         *proxy.NginxManager
+	limiter       *rateLimiter
+	dashboardHTML []byte
 
 	// Real-time system stats cache
 	statsMu   sync.RWMutex
@@ -60,6 +62,24 @@ func Start(addr string, db *sql.DB) error {
 		appStatsCache: make(map[string]AppResourceStats),
 	}
 
+	// Rate limiter for API/webhook abuse protection (kept tight for the RAM budget).
+	srv.limiter = newRateLimiter(200, time.Minute)
+
+	// Pre-render the dashboard HTML with the API token injected, so the SPA can
+	// authenticate without a separate build step.
+	if _, err := os.Stat("dashboard/dist/index.html"); err == nil {
+		if raw, rerr := os.ReadFile("dashboard/dist/index.html"); rerr == nil {
+			srv.dashboardHTML = []byte(strings.ReplaceAll(string(raw), "REGUANT_API_TOKEN_PLACEHOLDER", cfg.APIToken))
+		}
+	}
+
+	// Bind WebSocket origin checks to the configured policy.
+	upgrader.CheckOrigin = srv.checkOrigin
+
+	if srv.cfg.APIToken == "" {
+		log.Println("WARNING: REGUANT_API_TOKEN is not set; the API, terminal, and webhook are unauthenticated. Set it for any exposed deployment.")
+	}
+
 	// Start system metrics gathering routine
 	go srv.statsGathererLoop()
 
@@ -80,6 +100,11 @@ func Start(addr string, db *sql.DB) error {
 	mux.HandleFunc("/api/ws/stats", srv.handleWSStats)
 	mux.HandleFunc("/api/ws/terminal", srv.handleWSTerminal)
 
+	// Authentication (GitHub OAuth login/logout) — public
+	mux.HandleFunc("/api/auth/github", srv.handleGitHubLogin)
+	mux.HandleFunc("/api/auth/github/callback", srv.handleGitHubCallback)
+	mux.HandleFunc("/api/auth/logout", srv.handleLogout)
+
 	// Health Check
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -92,27 +117,21 @@ func Start(addr string, db *sql.DB) error {
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			if strings.Contains(r.URL.Path, ".") {
 				fileServer.ServeHTTP(w, r)
+			} else if srv.dashboardHTML != nil {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.Write(srv.dashboardHTML)
 			} else {
 				http.ServeFile(w, r, "dashboard/dist/index.html")
 			}
 		})
 	}
 
-	// CORS middleware
-	corsMux := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		mux.ServeHTTP(w, r)
-	})
+	// Compose middleware: security headers -> CORS -> rate limit -> auth -> routes
+	handler := securityHeaders(srv.corsMiddleware(srv.rateLimitMiddleware(srv.authMiddleware(mux))))
 
 	srvConn := &http.Server{
 		Addr:    addr,
-		Handler: corsMux,
+		Handler: handler,
 	}
 
 	// Run http listener in a goroutine
