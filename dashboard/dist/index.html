@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Reguant — Ultra-Lightweight GitOps PaaS</title>
+  <!-- Injected API token (replaced server-side at serve time); empty in open mode -->
+  <script>window.REGUANT_API_TOKEN = "REGUANT_API_TOKEN_PLACEHOLDER";</script>
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Tailwind Config -->
@@ -77,6 +79,7 @@
       <a href="#stats" onclick="showTab('stats')" class="text-slate-300 hover:text-white transition-colors text-sm font-semibold flex items-center gap-2">
         <i data-lucide="activity" class="w-4 h-4"></i> Server Health
       </a>
+      <span id="auth-area" class="ml-2"></span>
     </div>
   </nav>
 
@@ -294,6 +297,33 @@
 
   <script>
     // Tab Router
+
+    // --- Reguant auth helpers (token injected server-side) ---
+    function apiFetch(url, opts) {
+      opts = opts || {};
+      opts.headers = opts.headers || {};
+      var t = window.REGUANT_API_TOKEN;
+      if (t) opts.headers['Authorization'] = 'Bearer ' + t;
+      return fetch(url, opts);
+    }
+    function wsURL(path) {
+      var t = window.REGUANT_API_TOKEN;
+      if (t) return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(t);
+      return path;
+    }
+    (function () {
+      var area = document.getElementById('auth-area');
+      if (area) {
+        var hasSession = document.cookie.split(';').some(function (c) { return c.trim().indexOf('reguant_session=') === 0; });
+        if (window.REGUANT_API_TOKEN || hasSession) {
+          area.innerHTML = '<a href="/api/auth/logout" class="text-slate-300 hover:text-white text-sm font-semibold">Sign out</a>';
+        } else {
+          area.innerHTML = '<a href="/api/auth/github" class="text-brand hover:text-white text-sm font-semibold flex items-center gap-2"><i data-lucide="github" class="w-4 h-4"></i> Sign in</a>';
+          if (window.lucide) window.lucide.createIcons();
+        }
+      }
+    })();
+
     function showTab(tabName) {
       document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
       document.getElementById('tab-' + tabName).classList.remove('hidden');
@@ -311,7 +341,7 @@
     // Connect to WebSocket Server Metrics
     const host = window.location.host;
     const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const statsWS = new WebSocket(`${wsProto}//${host}/api/ws/stats`);
+    const statsWS = new WebSocket(`${wsProto}//${host}${wsURL('/api/ws/stats')}`);
 
     statsWS.onmessage = function(event) {
       const data = JSON.parse(event.data);
@@ -333,7 +363,7 @@
     // Fetch applications from the daemon
     async function loadApps() {
       try {
-        const res = await fetch('/api/apps');
+        const res = await apiFetch('/api/apps');
         const apps = await res.json();
         globalAppsCache = apps || [];
         renderApps(globalAppsCache);
@@ -440,11 +470,11 @@
       terminal.innerText = 'Triggering deployment build queue...\n';
 
       try {
-        const res = await fetch(`/api/apps/deploy?app_id=${appId}`, { method: 'POST' });
+        const res = await apiFetch(`/api/apps/deploy?app_id=${appId}`, { method: 'POST' });
         const data = await res.json();
 
         if (activeWSLog) activeWSLog.close();
-        activeWSLog = new WebSocket(`${wsProto}//${host}/api/ws/logs?dep_id=${data.deployment_id}`);
+        activeWSLog = new WebSocket(`${wsProto}//${host}${wsURL('/api/ws/logs?dep_id=' + data.deployment_id)}`);
 
         activeWSLog.onmessage = function(event) {
           terminal.innerText += event.data;
@@ -470,7 +500,7 @@
         return;
       }
       try {
-        const res = await fetch(`/api/apps?app_id=${appId}`, {
+        const res = await apiFetch(`/api/apps?app_id=${appId}`, {
           method: 'DELETE'
         });
         if (res.ok) {
@@ -528,7 +558,7 @@
           saveBtn.innerText = "Saving...";
           saveBtn.disabled = true;
 
-          const res = await fetch(`/api/apps/env?app_id=${appId}`, {
+          const res = await apiFetch(`/api/apps/env?app_id=${appId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(envMap)
@@ -580,7 +610,7 @@
       term.open(container);
       term.write("Connecting to app terminal shell...\r\n");
 
-      activeWSTerm = new WebSocket(`${wsProto}//${host}/api/ws/terminal?app_id=${appId}`);
+      activeWSTerm = new WebSocket(`${wsProto}//${host}${wsURL('/api/ws/terminal?app_id=' + appId)}`);
 
       activeWSTerm.onopen = function() {
         term.write("Connection established. Happy hacking!\r\n\r\n");
@@ -643,7 +673,7 @@
       });
 
       try {
-        const res = await fetch('/api/apps', {
+        const res = await apiFetch('/api/apps', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
