@@ -3,9 +3,13 @@ package server
 import (
 	"bufio"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -153,6 +157,11 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 				app.SSLEnabled = (sslVal == 1)
 				apps = append(apps, app)
 			}
+		}
+
+		if err := rows.Err(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -306,6 +315,29 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Only act on push events; ignore pings and other event types.
+	if event := r.Header.Get("X-GitHub-Event"); event != "" && event != "push" {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ignored","reason":"not a push event"}`))
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Verify the delivery signature when a webhook secret is configured.
+	if s.cfg.WebhookSecret != "" {
+		if !verifyGitHubSignature(s.cfg.WebhookSecret, r.Header.Get("X-Hub-Signature-256"), body) {
+			http.Error(w, "Invalid webhook signature", http.StatusUnauthorized)
+			return
+		}
+	} else {
+		log.Println("WARNING: /api/webhooks/github received but REGUANT_GITHUB_WEBHOOK_SECRET is not set; deploys are unauthenticated.")
+	}
+
 	var payload struct {
 		Ref        string `json:"ref"` // e.g. "refs/heads/main"
 		Repository struct {
@@ -314,7 +346,7 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		} `json:"repository"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if err := json.Unmarshal(body, &payload); err != nil {
 		http.Error(w, "Invalid payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -357,6 +389,22 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(fmt.Sprintf(`{"status":"received","deployments_triggered":%d}`, triggeredCount)))
+}
+
+// verifyGitHubSignature reports whether sigHeader (e.g. "sha256=<hex>") matches the
+// HMAC-SHA256 of body using secret. Comparison is constant-time.
+func verifyGitHubSignature(secret, sigHeader string, body []byte) bool {
+	const prefix = "sha256="
+	if !strings.HasPrefix(sigHeader, prefix) {
+		return false
+	}
+	expected, err := hex.DecodeString(strings.TrimPrefix(sigHeader, prefix))
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	return hmac.Equal(mac.Sum(nil), expected)
 }
 
 // REST: /api/apps/stats (GET resource consumption for all apps)
