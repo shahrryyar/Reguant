@@ -71,3 +71,11 @@ passing CI run before it can be merged.
 
 > Tip: keep PRs small and focused. Link any related issue with `Closes #123` so it closes
 > automatically on merge.
+
+---
+
+## 💬 Questions & Discussions
+
+For general questions, ideas, and community discussion, use **GitHub Discussions**
+(not Issues). Open an **Issue** only for reproducible bugs or concrete feature requests.
+Discussions give collaborators a place to ask and share before opening a pull request.
