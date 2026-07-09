@@ -57,9 +57,17 @@ Any PR failing formatting checks in GitHub Actions will be blocked.
 
 ## 📥 Pull Request Workflow
 
-1. Fork the repository on GitHub.
-2. Create a clean feature branch: `git checkout -b feat/my-new-feature`
+`main` is a **protected branch**: collaborators cannot push to it directly and must
+contribute through pull requests. Every PR requires at least one approving review and a
+passing CI run before it can be merged.
+
+1. Fork the repository on GitHub (or push a branch to this repo if you are a collaborator).
+2. Create a clean feature branch off `main`: `git checkout -b feat/my-new-feature`
 3. Commit your changes with descriptive messages: `git commit -m "feat: my change"`
-4. Run formatting checks: `go fmt ./...`
+4. Run formatting checks: `go fmt ./...` (CI blocks PRs that fail `gofmt`)
 5. Run the test suite: `go test ./...`
-6. Push to your branch and open a Pull Request against our `main` branch.
+6. Push your branch: `git push -u origin feat/my-new-feature`
+7. Open a Pull Request against `main` and fill in the PR template. Request a review from a maintainer.
+
+> Tip: keep PRs small and focused. Link any related issue with `Closes #123` so it closes
+> automatically on merge.
