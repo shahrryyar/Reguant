@@ -17,6 +17,7 @@ type Config struct {
 	SSLEmail                string
 	GitHubOAuthClientID     string
 	GitHubOAuthClientSecret string
+	GitHubAllowedUsers      string
 }
 
 func Load() *Config {
@@ -33,6 +34,7 @@ func Load() *Config {
 		SSLEmail:                getEnv("REGUANT_SSL_EMAIL", ""),
 		GitHubOAuthClientID:     getEnv("REGUANT_GITHUB_OAUTH_CLIENT_ID", ""),
 		GitHubOAuthClientSecret: getEnv("REGUANT_GITHUB_OAUTH_CLIENT_SECRET", ""),
+		GitHubAllowedUsers:      getEnv("REGUANT_GITHUB_ALLOWED_USERS", ""),
 	}
 }
 

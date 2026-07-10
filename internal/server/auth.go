@@ -219,8 +219,8 @@ func randomHex(n int) string {
 }
 
 func (s *Server) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.GitHubOAuthClientID == "" || s.cfg.GitHubOAuthClientSecret == "" {
-		http.Error(w, "GitHub OAuth is not configured (set REGUANT_GITHUB_OAUTH_CLIENT_ID and REGUANT_GITHUB_OAUTH_CLIENT_SECRET)", http.StatusNotImplemented)
+	if s.cfg.GitHubOAuthClientID == "" || s.cfg.GitHubOAuthClientSecret == "" || s.cfg.GitHubAllowedUsers == "" {
+		http.Error(w, "GitHub OAuth is not configured (set REGUANT_GITHUB_OAUTH_CLIENT_ID, REGUANT_GITHUB_OAUTH_CLIENT_SECRET, and REGUANT_GITHUB_ALLOWED_USERS)", http.StatusNotImplemented)
 		return
 	}
 	state := randomHex(32)
@@ -242,8 +242,8 @@ func (s *Server) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.GitHubOAuthClientID == "" || s.cfg.GitHubOAuthClientSecret == "" {
-		http.Error(w, "GitHub OAuth is not configured", http.StatusNotImplemented)
+	if s.cfg.GitHubOAuthClientID == "" || s.cfg.GitHubOAuthClientSecret == "" || s.cfg.GitHubAllowedUsers == "" {
+		http.Error(w, "GitHub OAuth is not configured (set REGUANT_GITHUB_OAUTH_CLIENT_ID, REGUANT_GITHUB_OAUTH_CLIENT_SECRET, and REGUANT_GITHUB_ALLOWED_USERS)", http.StatusNotImplemented)
 		return
 	}
 	state := r.URL.Query().Get("state")
@@ -282,6 +282,18 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(resp.Body).Decode(&tok)
 	if tok.AccessToken == "" {
 		http.Error(w, "GitHub did not return an access token", http.StatusBadGateway)
+		return
+	}
+
+	// Enforce the username allowlist: the OAuth token only proves the visitor
+	// controls *some* GitHub account, not that they are authorized.
+	login, err := fetchGitHubLogin(r.Context(), tok.AccessToken)
+	if err != nil {
+		http.Error(w, "Failed to verify GitHub identity", http.StatusBadGateway)
+		return
+	}
+	if !parseAllowedUsers(s.cfg.GitHubAllowedUsers)[strings.ToLower(login)] {
+		http.Error(w, "This GitHub account is not permitted to access Reguant", http.StatusForbidden)
 		return
 	}
 

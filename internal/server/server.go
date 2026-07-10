@@ -113,7 +113,7 @@ func Start(addr string, db *sql.DB) error {
 	// Health Check
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		oauthEnabled := srv.cfg.GitHubOAuthClientID != "" && srv.cfg.GitHubOAuthClientSecret != ""
+		oauthEnabled := srv.cfg.GitHubOAuthClientID != "" && srv.cfg.GitHubOAuthClientSecret != "" && srv.cfg.GitHubAllowedUsers != ""
 		w.Write([]byte(fmt.Sprintf(`{"status":"healthy","uptime":"online","github_oauth":%t}`, oauthEnabled)))
 	})
 
