@@ -377,18 +377,54 @@ func (d *Deployer) runCmd(ctx context.Context, depID string, dir string, name st
 	}
 
 	reader := bufio.NewReader(stdout)
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return err
-		}
+	var buf strings.Builder
+	var bufMu sync.Mutex
 
-		// Append line directly to DB logs so it streams via WebSockets in real time
-		_, _ = d.db.Exec(`UPDATE deployments SET logs = logs || ? WHERE id = ?`, line, depID)
+	// Flush at most ~4x/sec so the WS tail stays live without per-line writes.
+	flush := func() {
+		bufMu.Lock()
+		if buf.Len() == 0 {
+			bufMu.Unlock()
+			return
+		}
+		chunk := buf.String()
+		buf.Reset()
+		bufMu.Unlock()
+		_, _ = d.db.Exec(`UPDATE deployments SET logs = logs || ? WHERE id = ?`, chunk, depID)
 	}
+
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(250 * time.Millisecond)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				flush()
+			}
+		}
+	}()
+
+	for {
+		line, rerr := reader.ReadString('\n')
+		if len(line) > 0 {
+			bufMu.Lock()
+			buf.WriteString(line)
+			bufMu.Unlock()
+		}
+		if rerr != nil {
+			if rerr != io.EOF {
+				close(done)
+				flush() // final drain
+				return rerr
+			}
+			break // EOF ends streaming
+		}
+	}
+	close(done)
+	flush() // final drain
 
 	return cmd.Wait()
 }

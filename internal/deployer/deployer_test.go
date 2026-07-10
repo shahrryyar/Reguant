@@ -1,6 +1,8 @@
 package deployer
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/shahrryyar/reguant/internal/config"
@@ -38,5 +40,35 @@ func TestActiveMapCleanupIsOwnershipScoped(t *testing.T) {
 	d.mu.Unlock()
 	if !still {
 		t.Fatal("stale gen-1 finish must not remove gen-2's entry")
+	}
+}
+
+func TestRunCmdBatchesLogs(t *testing.T) {
+	database, err := db.Init(t.TempDir() + "/t.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	d := NewDeployer(database, &config.Config{})
+
+	_, err = database.Exec(`INSERT INTO applications (id,name,git_repo,git_branch,build_type,port,status) VALUES ('a','a','https://x/y','main','systemd',10001,'idle')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = database.Exec(`INSERT INTO deployments (id, application_id, status) VALUES ('d','a','building')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Emit 200 lines; all must land in the logs column.
+	if err := d.runCmd(context.Background(), "d", "", "sh", "-c", "for i in $(seq 1 200); do echo line$i; done"); err != nil {
+		t.Fatal(err)
+	}
+	var logs string
+	if err := database.QueryRow("SELECT logs FROM deployments WHERE id='d'").Scan(&logs); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs, "line1\n") || !strings.Contains(logs, "line200\n") {
+		t.Errorf("missing lines; got %d bytes", len(logs))
 	}
 }
