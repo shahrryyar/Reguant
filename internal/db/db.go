@@ -39,47 +39,12 @@ func Init(dbPath string) (*sql.DB, error) {
 		}
 	}
 
-	// Create tables if they do not exist
-	if err := createSchema(db); err != nil {
+	// Create tables / apply schema migrations if they do not exist
+	if err := runMigrations(db); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("failed to create database schema: %w", err)
+		return nil, fmt.Errorf("failed to apply database migrations: %w", err)
 	}
 
 	log.Println("Database initialized successfully with WAL and performance optimizations.")
 	return db, nil
-}
-
-func createSchema(db *sql.DB) error {
-	schema := `
-	CREATE TABLE IF NOT EXISTS applications (
-		id TEXT PRIMARY KEY,
-		name TEXT NOT NULL UNIQUE,
-		git_repo TEXT NOT NULL,
-		git_branch TEXT NOT NULL DEFAULT 'main',
-		build_type TEXT NOT NULL,          -- 'docker' or 'systemd'
-		build_command TEXT,                 -- For systemd
-		run_command TEXT,                   -- For systemd
-		port INTEGER NOT NULL UNIQUE,       -- Internal port allocated for web routing
-		domain TEXT,                        -- Dynamic routing domain (e.g. app.test)
-		ssl_enabled INTEGER DEFAULT 0,      -- 0 = HTTP, 1 = HTTPS
-		env_vars TEXT DEFAULT '{}',         -- JSON string of env key-value pairs
-		status TEXT NOT NULL DEFAULT 'idle',-- 'idle', 'deploying', 'running', 'failed'
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-	);
-
-	CREATE TABLE IF NOT EXISTS deployments (
-		id TEXT PRIMARY KEY,
-		application_id TEXT NOT NULL,
-		commit_hash TEXT,
-		commit_message TEXT,
-		status TEXT NOT NULL,               -- 'queued', 'building', 'success', 'failed'
-		logs TEXT DEFAULT '',               -- Streaming logs
-		started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		ended_at TIMESTAMP,
-		FOREIGN KEY(application_id) REFERENCES applications(id) ON DELETE CASCADE
-	);
-	`
-	_, err := db.Exec(schema)
-	return err
 }
