@@ -93,9 +93,14 @@ func Start(ctx context.Context, addr string, db *sql.DB) error {
 	// REST API Endpoints
 	mux.HandleFunc("/api/apps", srv.handleApps)
 	mux.HandleFunc("/api/apps/deploy", srv.handleDeploy)
+	mux.HandleFunc("POST /api/apps/{id}/stop", srv.handleStopApp)
+	mux.HandleFunc("POST /api/apps/{id}/start", srv.handleStartApp)
+	mux.HandleFunc("POST /api/apps/{id}/restart", srv.handleRestartApp)
 	mux.HandleFunc("/api/apps/stats", srv.handleAppStats)
 	mux.HandleFunc("/api/apps/env", srv.handleUpdateEnv)            // Update env vars
 	mux.HandleFunc("/api/apps/ssl", srv.handleEnableSSL)            // Enable TLS for an app's domain
+	mux.HandleFunc("/api/apps/deployments", srv.handleListDeployments)
+	mux.HandleFunc("/api/apps/rollback", srv.handleRollback)
 	mux.HandleFunc("/api/webhooks/github", srv.handleGitHubWebhook) // Auto deployment webhook
 
 	// WebSockets Endpoints
@@ -141,7 +146,17 @@ func Start(ctx context.Context, addr string, db *sql.DB) error {
 	}
 
 	// Compose middleware: security headers -> CORS -> rate limit -> auth -> routes
-	handler := securityHeaders(srv.corsMiddleware(srv.rateLimitMiddleware(srv.authMiddleware(mux))))
+	core := securityHeaders(srv.corsMiddleware(srv.rateLimitMiddleware(srv.authMiddleware(mux))))
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The status-recording wrapper is not a Hijacker, so let WS upgrades
+		// bypass it; log them at connect time instead.
+		if strings.HasPrefix(r.URL.Path, "/api/ws/") {
+			log.Printf("%s %s (ws) ip=%s", r.Method, r.URL.Path, srv.clientIP(r))
+			core.ServeHTTP(w, r)
+			return
+		}
+		srv.loggingMiddleware(core).ServeHTTP(w, r)
+	})
 
 	srvConn := &http.Server{
 		Addr:    addr,
@@ -319,6 +334,51 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(fmt.Sprintf(`{"deployment_id":"%s","status":"queued"}`, depID)))
 }
 
+// REST: POST /api/apps/{id}/stop  -> halt a running app
+func (s *Server) handleStopApp(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "Missing app id", http.StatusBadRequest)
+		return
+	}
+	if err := s.deployer.Stop(id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "stopped", "message": "Application stopped successfully"})
+}
+
+// REST: POST /api/apps/{id}/start  -> start a stopped app
+func (s *Server) handleStartApp(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "Missing app id", http.StatusBadRequest)
+		return
+	}
+	if err := s.deployer.Start(id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "running", "message": "Application started successfully"})
+}
+
+// REST: POST /api/apps/{id}/restart  -> restart an app
+func (s *Server) handleRestartApp(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "Missing app id", http.StatusBadRequest)
+		return
+	}
+	if err := s.deployer.Restart(id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "restarted", "message": "Application restarted successfully"})
+}
+
 // REST: /api/apps/env?app_id=xxx (PUT update env vars)
 func (s *Server) handleUpdateEnv(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "PUT" {
@@ -404,9 +464,11 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 
 	var payload struct {
 		Ref        string `json:"ref"` // e.g. "refs/heads/main"
+		After      string `json:"after"` // head sha of the push
 		Repository struct {
 			HTMLURL  string `json:"html_url"`  // e.g. "https://github.com/user/repo"
 			CloneURL string `json:"clone_url"` // e.g. "https://github.com/user/repo.git"
+			FullName string `json:"full_name"` // "owner/repo"
 		} `json:"repository"`
 	}
 
@@ -419,6 +481,19 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(payload.Ref, "/")
 	branch := parts[len(parts)-1]
 
+	if s.cfg.RequireCISuccess && payload.After != "" && payload.Repository.FullName != "" {
+		parts := strings.SplitN(payload.Repository.FullName, "/", 2)
+		if len(parts) == 2 {
+			ok, err := ciSuccess(r.Context(), s.cfg.GitHubAPIToken, parts[0], parts[1], payload.After)
+			if err != nil || !ok {
+				log.Printf("[Webhook] CI gate blocked deploy for %s@%s (ok=%v err=%v)", payload.Repository.FullName, payload.After, ok, err)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"status":"skipped","reason":"ci_not_successful"}`))
+				return
+			}
+		}
+	}
+
 	// Normalize Git repository URLs so an SSH clone URL (git@host:path),
 	// an HTTPS URL (https://host/path) and the webhook's clone_url all
 	// match the URL a user registered the app with. See canonicalRepoURL.
@@ -427,25 +502,38 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		canonicalRepoURL(payload.Repository.CloneURL): true,
 	}
 
+	type appMatch struct {
+		id      string
+		gitRepo string
+	}
+	var matches []appMatch
+
 	// Search SQLite DB for applications running this repo & branch
 	rows, err := s.db.Query("SELECT id, git_repo FROM applications WHERE git_branch = ?", branch)
 	if err != nil {
 		http.Error(w, "Database error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer rows.Close()
+	for rows.Next() {
+		var am appMatch
+		if err := rows.Scan(&am.id, &am.gitRepo); err == nil {
+			matches = append(matches, am)
+		}
+	}
+	rows.Close()
 
 	triggeredCount := 0
-	for rows.Next() {
-		var appID string
-		var gitRepo string
-		if err := rows.Scan(&appID, &gitRepo); err == nil {
-			if targetNormals[canonicalRepoURL(gitRepo)] {
-				// Match found! Deploy in background
-				_, err := s.deployer.Deploy(appID)
-				if err == nil {
-					triggeredCount++
-				}
+	for _, am := range matches {
+		if targetNormals[canonicalRepoURL(am.gitRepo)] {
+			// Match found! Deploy in background
+			var err error
+			if payload.After != "" {
+				_, err = s.deployer.Rollback(am.id, payload.After)
+			} else {
+				_, err = s.deployer.Deploy(am.id)
+			}
+			if err == nil {
+				triggeredCount++
 			}
 		}
 	}

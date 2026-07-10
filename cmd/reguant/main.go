@@ -20,13 +20,20 @@ import (
 func main() {
 	cfg := config.Load()
 
+	if err := cfg.Fatal(); err != nil {
+		log.Fatalf("Invalid configuration: %v", err)
+	}
+	for _, w := range cfg.Validate() {
+		log.Printf("WARNING: %s", w)
+	}
+
 	// 1. Parse CLI flags
 	restoreFlag := flag.Bool("restore", false, "Restore the SQLite database from offsite S3/R2 backup and exit")
 	flag.Parse()
 
 	// Retrieve S3 Credentials
-	s3Endpoint := os.Getenv("REGUANT_S3_ENDPOINT")
-	s3Bucket := os.Getenv("REGUANT_S3_BUCKET")
+	s3Endpoint := cfg.S3Endpoint
+	s3Bucket := cfg.S3Bucket
 	s3Access := os.Getenv("REGUANT_S3_ACCESS_KEY")
 	s3Secret := os.Getenv("REGUANT_S3_SECRET_KEY")
 

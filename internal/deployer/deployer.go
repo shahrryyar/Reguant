@@ -21,6 +21,9 @@ import (
 	"github.com/shahrryyar/reguant/internal/proxy"
 )
 
+var ExecCommand = exec.Command
+var ExecCommandContext = exec.CommandContext
+
 type deployHandle struct {
 	gen    uint64
 	cancel context.CancelFunc
@@ -32,6 +35,7 @@ type Deployer struct {
 	mu     sync.Mutex
 	active map[string]deployHandle
 	genSeq uint64
+	pinned map[string]string
 }
 
 type Application struct {
@@ -54,6 +58,7 @@ func NewDeployer(db *sql.DB, cfg *config.Config) *Deployer {
 		db:     db,
 		cfg:    cfg,
 		active: make(map[string]deployHandle),
+		pinned: make(map[string]string),
 	}
 }
 
@@ -150,6 +155,11 @@ func (d *Deployer) runDeploymentPipeline(ctx context.Context, depID, appID strin
 
 	appDir := filepath.Join(d.cfg.AppsDir, app.Name)
 
+	d.mu.Lock()
+	pin := d.pinned[appID]
+	delete(d.pinned, appID)
+	d.mu.Unlock()
+
 	// Step 1: Git Clone / Fetch & Checkout
 	if _, err := os.Stat(appDir); os.IsNotExist(err) {
 		updateStatus("building", fmt.Sprintf("Cloning repository: %s (branch: %s)...\n", app.GitRepo, app.GitBranch))
@@ -159,6 +169,15 @@ func (d *Deployer) runDeploymentPipeline(ctx context.Context, depID, appID strin
 			updateAppStatus("failed")
 			return
 		}
+		if pin != "" {
+			updateStatus("building", fmt.Sprintf("Rolling back to commit %s...\n", pin))
+			err = d.runCmd(ctx, depID, appDir, "git", "reset", "--hard", pin)
+			if err != nil {
+				updateStatus("failed", "Git reset to pinned commit failed.\n")
+				updateAppStatus("failed")
+				return
+			}
+		}
 	} else {
 		updateStatus("building", "Repository exists. Pulling latest changes...\n")
 		err = d.runCmd(ctx, depID, appDir, "git", "fetch", "origin")
@@ -167,7 +186,12 @@ func (d *Deployer) runDeploymentPipeline(ctx context.Context, depID, appID strin
 			updateAppStatus("failed")
 			return
 		}
-		err = d.runCmd(ctx, depID, appDir, "git", "reset", "--hard", "origin/"+app.GitBranch)
+		resetTarget := "origin/" + app.GitBranch
+		if pin != "" {
+			resetTarget = pin
+			updateStatus("building", fmt.Sprintf("Rolling back to commit %s...\n", pin))
+		}
+		err = d.runCmd(ctx, depID, appDir, "git", "reset", "--hard", resetTarget)
 		if err != nil {
 			updateStatus("failed", "Git reset failed.\n")
 			updateAppStatus("failed")
@@ -229,7 +253,7 @@ func (d *Deployer) deployDocker(ctx context.Context, depID string, app *Applicat
 	dockerRunArgs = append(dockerRunArgs, imgName)
 
 	// Clean up temp container if it already exists
-	_ = exec.Command("docker", "rm", "-f", containerNameTemp).Run()
+	_ = ExecCommand("docker", "rm", "-f", containerNameTemp).Run()
 
 	err = d.runCmd(ctx, depID, appDir, "docker", dockerRunArgs...)
 	if err != nil {
@@ -250,7 +274,7 @@ func (d *Deployer) deployDocker(ctx context.Context, depID string, app *Applicat
 	}
 
 	if !success {
-		_ = exec.Command("docker", "rm", "-f", containerNameTemp).Run()
+		_ = ExecCommand("docker", "rm", "-f", containerNameTemp).Run()
 		return fmt.Errorf("health check failed on port %d, deployment rolled back", tempPort)
 	}
 
@@ -258,8 +282,8 @@ func (d *Deployer) deployDocker(ctx context.Context, depID string, app *Applicat
 	// A container's published port mapping is fixed at `docker run` time and
 	// cannot be changed by renaming, so the promoted container keeps listening
 	// on tempPort. We must repoint the Nginx upstream to the live port.
-	_ = exec.Command("docker", "rm", "-f", containerNameActive).Run()
-	if err := exec.Command("docker", "rename", containerNameTemp, containerNameActive).Run(); err != nil {
+	_ = ExecCommand("docker", "rm", "-f", containerNameActive).Run()
+	if err := ExecCommand("docker", "rename", containerNameTemp, containerNameActive).Run(); err != nil {
 		return fmt.Errorf("failed to promote staging container: %w", err)
 	}
 
@@ -345,8 +369,8 @@ WantedBy=multi-user.target
 
 	// Reload & restart service
 	updateLogs("Restarting systemd service...\n")
-	_ = exec.Command("systemctl", "daemon-reload").Run()
-	_ = exec.Command("systemctl", "enable", serviceName).Run()
+	_ = ExecCommand("systemctl", "daemon-reload").Run()
+	_ = ExecCommand("systemctl", "enable", serviceName).Run()
 	err = d.runCmd(ctx, depID, "", "systemctl", "restart", serviceName)
 	if err != nil {
 		return fmt.Errorf("failed to restart systemd service: %w", err)
@@ -356,7 +380,7 @@ WantedBy=multi-user.target
 }
 
 func (d *Deployer) runCmd(ctx context.Context, depID string, dir string, name string, args ...string) error {
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := ExecCommandContext(ctx, name, args...)
 	cmd.Env = append(os.Environ(),
 		"DOCKER_BUILDKIT=1",
 		// Allow private Git repos over SSH: auto-accept GitHub's host key on
@@ -465,19 +489,19 @@ func (d *Deployer) Delete(appID string) error {
 	if buildType == "docker" {
 		containerName := fmt.Sprintf("reguant-%s", appID)
 		tempContainer := fmt.Sprintf("reguant-%s-temp", appID)
-		_ = exec.Command("docker", "rm", "-f", containerName).Run()
-		_ = exec.Command("docker", "rm", "-f", tempContainer).Run()
-		_ = exec.Command("docker", "rmi", fmt.Sprintf("reguant-%s", appID)).Run()
+		_ = ExecCommand("docker", "rm", "-f", containerName).Run()
+		_ = ExecCommand("docker", "rm", "-f", tempContainer).Run()
+		_ = ExecCommand("docker", "rmi", fmt.Sprintf("reguant-%s", appID)).Run()
 	} else {
 		serviceName := fmt.Sprintf("reguant-%s", appID)
 		servicePath := fmt.Sprintf("/etc/systemd/system/%s.service", serviceName)
 
-		_ = exec.Command("systemctl", "stop", serviceName).Run()
-		_ = exec.Command("systemctl", "disable", serviceName).Run()
+		_ = ExecCommand("systemctl", "stop", serviceName).Run()
+		_ = ExecCommand("systemctl", "disable", serviceName).Run()
 
 		if _, err := os.Stat(servicePath); err == nil {
 			_ = os.Remove(servicePath)
-			_ = exec.Command("systemctl", "daemon-reload").Run()
+			_ = ExecCommand("systemctl", "daemon-reload").Run()
 		}
 	}
 
@@ -510,7 +534,7 @@ func (d *Deployer) finishDeploy(appID string, gen uint64) {
 // deployment row. Best-effort: a missing git or detached state just leaves the
 // columns null.
 func (d *Deployer) recordCommit(depID, appDir string) {
-	out, err := exec.Command("git", "-C", appDir, "log", "-1", "--pretty=%H%n%s").Output()
+	out, err := ExecCommand("git", "-C", appDir, "log", "-1", "--pretty=%H%n%s").Output()
 	if err != nil {
 		return
 	}
@@ -521,4 +545,30 @@ func (d *Deployer) recordCommit(depID, appDir string) {
 		msg = parts[1]
 	}
 	_, _ = d.db.Exec(`UPDATE deployments SET commit_hash = ?, commit_message = ? WHERE id = ?`, hash, msg, depID)
+}
+
+// Rollback checks out a specific commit and runs a deployment.
+func (d *Deployer) Rollback(appID, commitHash string) (string, error) {
+	if !isHexSha(commitHash) {
+		return "", fmt.Errorf("invalid commit hash")
+	}
+	d.mu.Lock()
+	if d.pinned == nil {
+		d.pinned = make(map[string]string)
+	}
+	d.pinned[appID] = commitHash
+	d.mu.Unlock()
+	return d.Deploy(appID)
+}
+
+func isHexSha(s string) bool {
+	if len(s) < 7 || len(s) > 40 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }

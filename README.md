@@ -43,6 +43,10 @@ Reguant uses standard environment variables for configuration. You can supply th
 | `REGUANT_CORS_ORIGIN` | Allowed CORS origin for the API (e.g. `https://dash.example.com`) | _(empty = same-origin when a token is set)_ |
 | `REGUANT_GITHUB_OAUTH_CLIENT_ID` | GitHub OAuth app client ID (enables dashboard "Sign in") | _(empty = disabled)_ |
 | `REGUANT_GITHUB_OAUTH_CLIENT_SECRET` | GitHub OAuth app client secret | _(empty = disabled)_ |
+| `REGUANT_GITHUB_ALLOWED_USERS` | Comma-separated list of GitHub usernames permitted to sign in via OAuth | _(empty = OAuth disabled)_ |
+| `REGUANT_REQUIRE_CI_SUCCESS` | When `true`, webhook deploys only trigger if the GitHub combined commit status is `success` | `false` |
+| `REGUANT_GITHUB_API_TOKEN` | Personal Access Token (PAT) used by the CI gate to check status on private repositories | _(empty)_ |
+| `REGUANT_TRUST_PROXY_HEADERS` | Trust `X-Forwarded-For` and `X-Real-IP` headers for client IP and rate limiting. Only enable behind a trusted reverse proxy | `false` |
 
 ---
 
@@ -169,6 +173,25 @@ Reguant provides native, automatic HTTPS via Certbot and Let's Encrypt.
   - Body: `{"ssl": true}` or `{"ssl": false}`
   - Wires Certbot to request a certificate using the configured `REGUANT_SSL_EMAIL` and updates the Nginx virtual host block in-place.
 - **SSL Email**: Configured via `REGUANT_SSL_EMAIL` during installation or service config. Used by Let's Encrypt for registration and renewal warning notifications.
+
+---
+
+## 🔄 Application Lifecycle, History & Rollback
+
+Reguant allows you to stop, start, and restart running applications, view deployment logs, and easily roll back to previous successful deployments.
+
+### 1. Stop/Start/Restart Endpoints
+- **Stop App**: `POST /api/apps/{id}/stop` — Halts the application's runtime container or systemd process.
+- **Start App**: `POST /api/apps/{id}/start` — Restarts a stopped application container or systemd process.
+- **Restart App**: `POST /api/apps/{id}/restart` — Restarts the application directly.
+
+### 2. Deployment History
+- **Endpoint**: `GET /api/apps/deployments?app_id=<app_id>`
+- **Response**: Returns a JSON list of the 50 most recent deployments containing the deployment ID, commit hash, commit message, status (e.g. `success`, `failed`), and start timestamp.
+
+### 3. Commit Rollback
+- **Endpoint**: `POST /api/apps/rollback?app_id=<app_id>&commit=<commit_sha>`
+- **Behavior**: Checking out the requested Git commit SHA and triggering a zero-downtime redeployment.
 
 ---
 

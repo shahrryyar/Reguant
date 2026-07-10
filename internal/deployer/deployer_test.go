@@ -2,6 +2,7 @@ package deployer
 
 import (
 	"context"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -70,5 +71,45 @@ func TestRunCmdBatchesLogs(t *testing.T) {
 	}
 	if !strings.Contains(logs, "line1\n") || !strings.Contains(logs, "line200\n") {
 		t.Errorf("missing lines; got %d bytes", len(logs))
+	}
+}
+
+func TestLifecycleStopStart(t *testing.T) {
+	oldExecCommand := ExecCommand
+	defer func() { ExecCommand = oldExecCommand }()
+	ExecCommand = func(name string, arg ...string) *exec.Cmd {
+		return exec.Command("true")
+	}
+
+	database, err := db.Init(t.TempDir() + "/t.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	d := NewDeployer(database, &config.Config{AppsDir: t.TempDir()})
+	_, err = database.Exec(`INSERT INTO applications (id,name,git_repo,git_branch,build_type,port,status) VALUES ('a','a','https://x/y','main','systemd',10001,'running')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.Stop("a"); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	if err := database.QueryRow("SELECT status FROM applications WHERE id='a'").Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "stopped" {
+		t.Errorf("after Stop expected stopped, got %q", status)
+	}
+
+	if err := d.Start("a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow("SELECT status FROM applications WHERE id='a'").Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "running" {
+		t.Errorf("after Start expected running, got %q", status)
 	}
 }

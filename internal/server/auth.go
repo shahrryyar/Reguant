@@ -49,13 +49,16 @@ func (rl *rateLimiter) allow(ip string) bool {
 	return false
 }
 
-// clientIP extracts the furthest upstream IP, honoring standard proxy headers.
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		return strings.TrimSpace(strings.Split(xff, ",")[0])
-	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
+// clientIP extracts the furthest upstream IP, honoring standard proxy headers
+// only if TrustProxyHeaders configuration is enabled.
+func (s *Server) clientIP(r *http.Request) string {
+	if s.cfg.TrustProxyHeaders {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			return strings.TrimSpace(strings.Split(xff, ",")[0])
+		}
+		if xri := r.Header.Get("X-Real-IP"); xri != "" {
+			return strings.TrimSpace(xri)
+		}
 	}
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host
@@ -186,7 +189,7 @@ func securityHeaders(next http.Handler) http.Handler {
 func (s *Server) rateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
-			if !s.limiter.allow(clientIP(r)) {
+			if !s.limiter.allow(s.clientIP(r)) {
 				http.Error(w, "Too many requests", http.StatusTooManyRequests)
 				return
 			}

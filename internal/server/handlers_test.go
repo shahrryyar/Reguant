@@ -1,10 +1,11 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
-	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -12,6 +13,15 @@ import (
 	"github.com/shahrryyar/reguant/internal/db"
 	"github.com/shahrryyar/reguant/internal/deployer"
 )
+
+func init() {
+	deployer.ExecCommand = func(name string, arg ...string) *exec.Cmd {
+		return exec.Command("true")
+	}
+	deployer.ExecCommandContext = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "true")
+	}
+}
 
 // insertApp is a small helper to seed an application row for handler tests.
 // A process-wide counter hands out a distinct port to every seeded app so
@@ -40,9 +50,7 @@ func newHandlerTestServer(database *sql.DB) *Server {
 // GitHub push webhook arrives carrying an HTTPS URL, and unrelated repos
 // must not trigger.
 func TestGitHubWebhookTriggersDeploySSH(t *testing.T) {
-	tmp := "test_webhook_ssh.db"
-	defer os.Remove(tmp)
-	database, err := db.Init(tmp)
+	database, err := db.Init(t.TempDir() + "/test.db")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,9 +83,7 @@ func TestGitHubWebhookTriggersDeploySSH(t *testing.T) {
 
 // T1: an app stored with an HTTPS URL must also match an HTTPS webhook.
 func TestGitHubWebhookTriggersDeployHTTPS(t *testing.T) {
-	tmp := "test_webhook_https.db"
-	defer os.Remove(tmp)
-	database, err := db.Init(tmp)
+	database, err := db.Init(t.TempDir() + "/test.db")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,9 +110,7 @@ func TestGitHubWebhookTriggersDeployHTTPS(t *testing.T) {
 
 // T2: saving env vars must trigger a redeploy.
 func TestHandleUpdateEnvRedeploys(t *testing.T) {
-	tmp := "test_env.db"
-	defer os.Remove(tmp)
-	database, err := db.Init(tmp)
+	database, err := db.Init(t.TempDir() + "/test.db")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,9 +136,7 @@ func TestHandleUpdateEnvRedeploys(t *testing.T) {
 
 // T5: PUT /api/apps toggles ssl_enabled without touching Nginx.
 func TestHandleUpdateAppSSLEnabledToggle(t *testing.T) {
-	tmp := "test_upd.db"
-	defer os.Remove(tmp)
-	database, err := db.Init(tmp)
+	database, err := db.Init(t.TempDir() + "/test.db")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,9 +171,7 @@ func TestHandleUpdateAppSSLEnabledToggle(t *testing.T) {
 
 // T5: an invalid domain in the update payload is rejected.
 func TestHandleUpdateAppInvalidDomain(t *testing.T) {
-	tmp := "test_updinv.db"
-	defer os.Remove(tmp)
-	database, err := db.Init(tmp)
+	database, err := db.Init(t.TempDir() + "/test.db")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,9 +190,7 @@ func TestHandleUpdateAppInvalidDomain(t *testing.T) {
 
 // T4: enabling SSL without a configured domain is rejected.
 func TestHandleEnableSSLRequiresDomain(t *testing.T) {
-	tmp := "test_ssl_dom.db"
-	defer os.Remove(tmp)
-	database, err := db.Init(tmp)
+	database, err := db.Init(t.TempDir() + "/test.db")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,9 +209,7 @@ func TestHandleEnableSSLRequiresDomain(t *testing.T) {
 
 // T4: enabling SSL without any email source is rejected.
 func TestHandleEnableSSLRequiresEmail(t *testing.T) {
-	tmp := "test_ssl_email.db"
-	defer os.Remove(tmp)
-	database, err := db.Init(tmp)
+	database, err := db.Init(t.TempDir() + "/test.db")
 	if err != nil {
 		t.Fatal(err)
 	}
