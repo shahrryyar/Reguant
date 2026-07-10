@@ -133,6 +133,14 @@ func (d *Deployer) runDeploymentPipeline(ctx context.Context, depID, appID strin
 	}
 	app.SSLEnabled = (sslVal == 1)
 
+	// Defense-in-depth: a row edited out-of-band must not let us deploy a
+	// transport-helper URL (ext::, file://, leading-dash) — an RCE vector.
+	if err := ValidateGitRepoURL(app.GitRepo); err != nil {
+		updateStatus("failed", fmt.Sprintf("Refusing to deploy invalid git repo: %v\n", err))
+		updateAppStatus("failed")
+		return
+	}
+
 	updateStatus("building", fmt.Sprintf("Starting deployment for %s...\n", app.Name))
 	updateAppStatus("deploying")
 

@@ -240,6 +240,12 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Reject transport-helper URLs (ext::, file://, leading-dash) — RCE vector.
+		if err := deployer.ValidateGitRepoURL(req.GitRepo); err != nil {
+			http.Error(w, "Invalid git repo: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
 		// Auto allocate free port
 		port, err := s.deployer.GetFreePort()
 		if err != nil {
