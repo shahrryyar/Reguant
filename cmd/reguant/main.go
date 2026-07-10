@@ -95,7 +95,7 @@ func main() {
 	})
 
 	log.Printf("Starting Reguant core backend on port %s...", cfg.ServerPort)
-	if err := server.Start(":"+cfg.ServerPort, database); err != nil {
+	if err := server.Start(ctx, ":"+cfg.ServerPort, database); err != nil {
 		log.Fatalf("HTTP server failure: %v", err)
 	}
 }

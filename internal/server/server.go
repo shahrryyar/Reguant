@@ -13,12 +13,10 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/signal"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -56,7 +54,7 @@ type Server struct {
 	appStatsCache map[string]AppResourceStats
 }
 
-func Start(addr string, db *sql.DB) error {
+func Start(ctx context.Context, addr string, db *sql.DB) error {
 	cfg := config.Load()
 	srv := &Server{
 		db:            db,
@@ -85,10 +83,10 @@ func Start(addr string, db *sql.DB) error {
 	}
 
 	// Start system metrics gathering routine
-	go srv.statsGathererLoop()
+	go srv.statsGathererLoop(ctx)
 
 	// Start background applications resource polling routine
-	go srv.appStatsPollLoop()
+	go srv.appStatsPollLoop(ctx)
 
 	mux := http.NewServeMux()
 
@@ -158,15 +156,15 @@ func Start(addr string, db *sql.DB) error {
 		}
 	}()
 
-	// Listen for operating system shutdown interrupts
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
+	// Listen for the shutdown signal carried by the root context (installed
+	// once in main.go via signal.NotifyContext) so we don't race a second
+	// signal handler.
+	<-ctx.Done()
 	log.Println("Received shutdown signal. Gracefully closing active connections...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return srvConn.Shutdown(ctx)
+	return srvConn.Shutdown(shutdownCtx)
 }
 
 // REST: /api/apps (GET list, POST create, DELETE remove)
@@ -744,20 +742,21 @@ func (s *Server) handleWSStats(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) statsGathererLoop() {
+func (s *Server) statsGathererLoop(ctx context.Context) {
 	var prevIdle, prevTotal uint64
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
 	for {
-		cpu, mem, idle, total := readSystemStats(prevIdle, prevTotal)
-		prevIdle = idle
-		prevTotal = total
-
-		s.statsMu.Lock()
-		s.cpuUsage = cpu
-		s.memUsage = mem
-		s.lastStatT = time.Now()
-		s.statsMu.Unlock()
-
-		time.Sleep(1 * time.Second)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cpu, mem, idle, total := readSystemStats(prevIdle, prevTotal)
+			prevIdle, prevTotal = idle, total
+			s.statsMu.Lock()
+			s.cpuUsage, s.memUsage, s.lastStatT = cpu, mem, time.Now()
+			s.statsMu.Unlock()
+		}
 	}
 }
 
@@ -817,7 +816,7 @@ func readSystemStats(prevIdle, prevTotal uint64) (cpuPercent, memPercent float64
 	return cpuPercent, memPercent, idle, total
 }
 
-func (s *Server) appStatsPollLoop() {
+func (s *Server) appStatsPollLoop(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -826,6 +825,8 @@ func (s *Server) appStatsPollLoop() {
 
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-ticker.C:
 			s.pollAppsStats()
 		}
