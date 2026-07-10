@@ -21,14 +21,63 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+# Prompt for SSL email address for Let's Encrypt certificates
+if [ -z "${REGUANT_SSL_EMAIL:-}" ]; then
+  if [ -t 0 ]; then
+    read -p "Enter your SSL email address (for Let's Encrypt notifications): " REGUANT_SSL_EMAIL
+    while [ -z "$REGUANT_SSL_EMAIL" ]; do
+      echo -e "${RED}Email address cannot be empty.${NC}"
+      read -p "Enter your SSL email address (for Let's Encrypt notifications): " REGUANT_SSL_EMAIL
+    done
+  else
+    # Try reading from /dev/tty if running in a piped context
+    if read -p "Enter your SSL email address (for Let's Encrypt notifications): " REGUANT_SSL_EMAIL < /dev/tty 2>/dev/null; then
+      while [ -z "$REGUANT_SSL_EMAIL" ]; do
+        echo -e "${RED}Email address cannot be empty.${NC}"
+        read -p "Enter your SSL email address: " REGUANT_SSL_EMAIL < /dev/tty
+      done
+    else
+      REGUANT_SSL_EMAIL="admin@localhost"
+      echo -e "${BLUE}Non-interactive terminal detected; defaulting SSL email to $REGUANT_SSL_EMAIL${NC}"
+    fi
+  fi
+fi
+
+# Distro and Package Manager Detection
+if command -v apt-get &> /dev/null; then
+  PKG_MANAGER="apt"
+elif command -v dnf &> /dev/null; then
+  PKG_MANAGER="dnf"
+elif command -v yum &> /dev/null; then
+  PKG_MANAGER="yum"
+elif command -v apk &> /dev/null; then
+  PKG_MANAGER="apk"
+else
+  echo -e "${RED}Error: Unsupported distribution (no apt, dnf, yum, or apk found).${NC}"
+  exit 1
+fi
+
+echo -e "${GREEN}Detected package manager: $PKG_MANAGER${NC}"
+
 # 1. Update Packages & Dependencies
 echo -e "\n${BLUE}[1/5] Installing core server dependencies...${NC}"
-apt-get update
-apt-get install -y curl git wget build-essential Nginx certbot python3-certbot-nginx jq
+if [ "$PKG_MANAGER" = "apt" ]; then
+  apt-get update
+  apt-get install -y curl git wget build-essential nginx certbot python3-certbot-nginx jq
+elif [ "$PKG_MANAGER" = "dnf" ] || [ "$PKG_MANAGER" = "yum" ]; then
+  $PKG_MANAGER install -y epel-release || true
+  $PKG_MANAGER update -y
+  $PKG_MANAGER install -y curl git wget make gcc nginx certbot python3-certbot-nginx jq
+elif [ "$PKG_MANAGER" = "apk" ]; then
+  apk update
+  apk add curl git wget build-base nginx certbot certbot-nginx jq bash
+fi
 
-# Enable auto-renewing certbot SSL timer
-systemctl enable certbot.timer || true
-systemctl start certbot.timer || true
+# Enable auto-renewing certbot SSL timer if systemd is active
+if command -v systemctl &> /dev/null && systemctl is-active dbus &> /dev/null; then
+  systemctl enable certbot.timer || true
+  systemctl start certbot.timer || true
+fi
 
 # 2. Check & Install Docker
 if ! command -v docker &> /dev/null; then
@@ -64,7 +113,11 @@ mkdir -p /etc/nginx/sites-enabled
 
 # Create the unprivileged runtime user that deployed applications run as
 if ! id -u reguant-apps >/dev/null 2>&1; then
-  useradd --system --no-create-home --shell /usr/sbin/nologin reguant-apps
+  if command -v useradd &> /dev/null; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin reguant-apps
+  else
+    adduser -S -D -H -s /sbin/nologin reguant-apps
+  fi
 fi
 chown -R reguant-apps:reguant-apps /var/lib/reguant/apps /var/lib/reguant/logs
 
@@ -108,15 +161,21 @@ Environment=REGUANT_DB_PATH=/var/lib/reguant/reguant.db
 Environment=REGUANT_APPS_DIR=/var/lib/reguant/apps
 Environment=REGUANT_LOGS_DIR=/var/lib/reguant/logs
 Environment=REGUANT_NGINX_DIR=/etc/nginx/sites-enabled
+Environment=REGUANT_SSL_EMAIL=$REGUANT_SSL_EMAIL
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
-systemctl enable reguant.service
-systemctl restart reguant.service
-echo -e "${GREEN}Reguant systemd service is active and running on port 9000.${NC}"
+if command -v systemctl &> /dev/null && systemctl is-active dbus &> /dev/null; then
+  systemctl daemon-reload
+  systemctl enable reguant.service
+  systemctl restart reguant.service
+  echo -e "${GREEN}Reguant systemd service is active and running on port 9000.${NC}"
+else
+  echo -e "${BLUE}Note: systemd is not active or available. Skipping service registration.${NC}"
+  echo -e "${BLUE}You can run the daemon manually: REGUANT_SSL_EMAIL=$REGUANT_SSL_EMAIL /usr/local/bin/reguant${NC}"
+fi
 
 # 7. Configure Nginx for Dashboard API proxying
 echo -e "\n${BLUE}[5/5] Hooking Reguant to Nginx proxy...${NC}"
@@ -145,7 +204,13 @@ server {
 EOF
 
 # Restart Nginx
-systemctl restart nginx
+if command -v systemctl &> /dev/null && systemctl is-active dbus &> /dev/null; then
+  systemctl restart nginx
+elif command -v rc-service &> /dev/null; then
+  rc-service nginx restart || true
+else
+  nginx -s reload || nginx || true
+fi
 echo -e "${GREEN}Nginx proxy configured successfully.${NC}"
 
 echo -e "\n${BLUE}===============================================${NC}"

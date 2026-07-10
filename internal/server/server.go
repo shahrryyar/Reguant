@@ -33,6 +33,10 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+// domainRegex validates a domain label (no scheme, path, or wildcard) to
+// prevent Nginx server_name injection via the API. Shared by app create/update.
+var domainRegex = regexp.MustCompile(`^[a-zA-Z0-9.-]+$`)
+
 type Server struct {
 	db            *sql.DB
 	cfg           *config.Config
@@ -93,6 +97,7 @@ func Start(addr string, db *sql.DB) error {
 	mux.HandleFunc("/api/apps/deploy", srv.handleDeploy)
 	mux.HandleFunc("/api/apps/stats", srv.handleAppStats)
 	mux.HandleFunc("/api/apps/env", srv.handleUpdateEnv)            // Update env vars
+	mux.HandleFunc("/api/apps/ssl", srv.handleEnableSSL)          // Enable TLS for an app's domain
 	mux.HandleFunc("/api/webhooks/github", srv.handleGitHubWebhook) // Auto deployment webhook
 
 	// WebSockets Endpoints
@@ -108,7 +113,8 @@ func Start(addr string, db *sql.DB) error {
 	// Health Check
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"healthy","uptime":"online"}`))
+		oauthEnabled := srv.cfg.GitHubOAuthClientID != "" && srv.cfg.GitHubOAuthClientSecret != ""
+		w.Write([]byte(fmt.Sprintf(`{"status":"healthy","uptime":"online","github_oauth":%t}`, oauthEnabled)))
 	})
 
 	// Serve Static Dashboard Files (convenient for local debugging)
@@ -117,11 +123,21 @@ func Start(addr string, db *sql.DB) error {
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			if strings.Contains(r.URL.Path, ".") {
 				fileServer.ServeHTTP(w, r)
-			} else if srv.dashboardHTML != nil {
-				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				w.Write(srv.dashboardHTML)
+			} else if srv.authenticate(r) || srv.cfg.APIToken == "" {
+				if srv.dashboardHTML != nil {
+					w.Header().Set("Content-Type", "text/html; charset=utf-8")
+					w.Write(srv.dashboardHTML)
+				} else {
+					http.ServeFile(w, r, "dashboard/dist/index.html")
+				}
 			} else {
-				http.ServeFile(w, r, "dashboard/dist/index.html")
+				if raw, err := os.ReadFile("dashboard/dist/index.html"); err == nil {
+					w.Header().Set("Content-Type", "text/html; charset=utf-8")
+					cleanHTML := strings.ReplaceAll(string(raw), "REGUANT_API_TOKEN_PLACEHOLDER", "")
+					w.Write([]byte(cleanHTML))
+				} else {
+					http.ServeFile(w, r, "dashboard/dist/index.html")
+				}
 			}
 		})
 	}
@@ -212,11 +228,16 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 
 		// Validate Domain if bound (prevent Nginx block injection)
 		if req.Domain != "" {
-			domainRegex := regexp.MustCompile(`^[a-zA-Z0-9.-]+$`)
 			if !domainRegex.MatchString(req.Domain) {
 				http.Error(w, "Invalid domain name format", http.StatusBadRequest)
 				return
 			}
+		}
+
+		// Validate Build Type
+		if req.BuildType != "docker" && req.BuildType != "systemd" {
+			http.Error(w, "Invalid build_type: must be 'docker' or 'systemd'", http.StatusBadRequest)
+			return
 		}
 
 		// Auto allocate free port
@@ -266,6 +287,8 @@ func (s *Server) handleApps(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"deleted"}`))
+	} else if r.Method == "PUT" {
+		s.handleUpdateApp(w, r)
 	}
 }
 
@@ -317,14 +340,26 @@ func (s *Server) handleUpdateEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = s.db.Exec("UPDATE applications SET env_vars = ? WHERE id = ?", string(envVarsJSON), appID)
+	_, err = s.db.Exec("UPDATE applications SET env_vars = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", string(envVarsJSON), appID)
 	if err != nil {
 		http.Error(w, "Failed to update env variables: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	// Persisted. Saving env vars triggers a redeploy so the new values
+	// take effect (this is the documented behaviour). A failed redeploy
+	// is logged but does not roll back the env save.
+	depID, deployErr := s.deployer.Deploy(appID)
+	if deployErr != nil {
+		log.Printf("[Env] saved but redeploy did not start for %s: %v", appID, deployErr)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"status":"success","message":"Environment variables updated"}`))
+	if deployErr == nil {
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"status":"success","message":"Environment variables updated","deployment_id":"%s"}`, depID)))
+	} else {
+		_, _ = w.Write([]byte(`{"status":"success","message":"Environment variables updated; redeploy failed to start"}`))
+	}
 }
 
 // Webhook: /api/webhooks/github (POST automated Git push trigger)
@@ -380,14 +415,13 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(payload.Ref, "/")
 	branch := parts[len(parts)-1]
 
-	// Normalize Git repository URLs (remove .git suffix, force HTTPS matching format)
-	normalizeURL := func(url string) string {
-		url = strings.TrimSuffix(url, ".git")
-		url = strings.ToLower(url)
-		return url
+	// Normalize Git repository URLs so an SSH clone URL (git@host:path),
+	// an HTTPS URL (https://host/path) and the webhook's clone_url all
+	// match the URL a user registered the app with. See canonicalRepoURL.
+	targetNormals := map[string]bool{
+		canonicalRepoURL(payload.Repository.HTMLURL):  true,
+		canonicalRepoURL(payload.Repository.CloneURL): true,
 	}
-
-	targetRepoNormal := normalizeURL(payload.Repository.HTMLURL)
 
 	// Search SQLite DB for applications running this repo & branch
 	rows, err := s.db.Query("SELECT id, git_repo FROM applications WHERE git_branch = ?", branch)
@@ -402,7 +436,7 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		var appID string
 		var gitRepo string
 		if err := rows.Scan(&appID, &gitRepo); err == nil {
-			if normalizeURL(gitRepo) == targetRepoNormal {
+			if targetNormals[canonicalRepoURL(gitRepo)] {
 				// Match found! Deploy in background
 				_, err := s.deployer.Deploy(appID)
 				if err == nil {
@@ -417,6 +451,152 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 // verifyGitHubSignature reports whether sigHeader (e.g. "sha256=<hex>") matches the
+// canonicalRepoURL normalizes a Git remote URL to a comparable
+// "host/path" form so that an app registered with an SSH URL
+// (git@github.com:user/repo.git) matches a webhook whose payload
+// carries an HTTPS URL (https://github.com/user/repo). It strips the
+// scheme, an optional user@, an optional :port, the .git suffix, and
+// lowercases the result.
+func canonicalRepoURL(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	s = strings.TrimSuffix(s, ".git")
+
+	// SCP-like syntax: [user@]host:path  (no scheme, colon is the separator)
+	if !strings.Contains(s, "://") {
+		s = strings.TrimPrefix(s, "git@")
+		if i := strings.Index(s, ":"); i >= 0 {
+			host := s[:i]
+			path := s[i+1:]
+			if !strings.HasPrefix(path, "/") {
+				path = "/" + path
+			}
+			s = host + path
+		}
+		return strings.TrimSuffix(s, "/")
+	}
+
+	// URL form: scheme://[user@]host[:port]/path
+	for _, p := range []string{"git://", "ssh://", "https://", "http://"} {
+		s = strings.TrimPrefix(s, p)
+	}
+	s = strings.TrimPrefix(s, "git@")
+	if i := strings.Index(s, ":"); i >= 0 {
+		// strip :port from the host
+		host := s[:i]
+		rest := s[i+1:] // "port/path"
+		if slash := strings.Index(rest, "/"); slash >= 0 {
+			s = host + rest[slash:]
+		} else {
+			s = host
+		}
+	}
+	return strings.TrimSuffix(s, "/")
+}
+
+// REST: /api/apps (PUT update domain / ssl_enabled)
+func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
+	appID := r.URL.Query().Get("app_id")
+	if appID == "" {
+		http.Error(w, "Missing app_id parameter", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Domain     string `json:"domain"`
+		SSLEnabled *bool  `json:"ssl_enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var name, curDomain string
+	var port int
+	if err := s.db.QueryRow("SELECT name, domain, port FROM applications WHERE id = ?", appID).Scan(&name, &curDomain, &port); err != nil {
+		http.Error(w, "Application not found", http.StatusNotFound)
+		return
+	}
+
+	if req.Domain != "" {
+		if !domainRegex.MatchString(req.Domain) {
+			http.Error(w, "Invalid domain name format", http.StatusBadRequest)
+			return
+		}
+		if _, err := s.db.Exec("UPDATE applications SET domain = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", req.Domain, appID); err != nil {
+			http.Error(w, "Failed to update domain: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Repoint Nginx only when the domain actually changed.
+		if req.Domain != curDomain {
+			if err := s.proxy.ConfigureProxy(name, req.Domain, port); err != nil {
+				http.Error(w, "Failed to reconfigure proxy: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+
+	if req.SSLEnabled != nil {
+		val := 0
+		if *req.SSLEnabled {
+			val = 1
+		}
+		if _, err := s.db.Exec("UPDATE applications SET ssl_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", val, appID); err != nil {
+			http.Error(w, "Failed to update ssl_enabled: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"updated"}`))
+}
+
+// REST: /api/apps/ssl?app_id=xxx&email=xxx (POST enable TLS via Certbot)
+func (s *Server) handleEnableSSL(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	appID := r.URL.Query().Get("app_id")
+	if appID == "" {
+		http.Error(w, "Missing app_id parameter", http.StatusBadRequest)
+		return
+	}
+
+	var domain string
+	if err := s.db.QueryRow("SELECT domain FROM applications WHERE id = ?", appID).Scan(&domain); err != nil {
+		http.Error(w, "Application not found", http.StatusNotFound)
+		return
+	}
+	if domain == "" {
+		http.Error(w, "App has no domain configured; set one before enabling SSL", http.StatusBadRequest)
+		return
+	}
+
+	email := r.URL.Query().Get("email")
+	if email == "" {
+		email = s.cfg.SSLEmail
+	}
+	if email == "" {
+		http.Error(w, "SSL email required: set REGUANT_SSL_EMAIL or pass ?email=", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.proxy.EnableSSL(domain, email); err != nil {
+		http.Error(w, "Failed to enable SSL: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if _, err := s.db.Exec("UPDATE applications SET ssl_enabled = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", appID); err != nil {
+		http.Error(w, "SSL enabled but failed to persist flag: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ssl_enabled"}`))
+}
+
 // HMAC-SHA256 of body using secret. Comparison is constant-time.
 func verifyGitHubSignature(secret, sigHeader string, body []byte) bool {
 	const prefix = "sha256="

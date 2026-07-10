@@ -7,35 +7,16 @@
   <!-- Injected API token (replaced server-side at serve time); empty in open mode -->
   <script>window.REGUANT_API_TOKEN = "REGUANT_API_TOKEN_PLACEHOLDER";</script>
   <!-- Tailwind CSS -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <!-- Tailwind Config -->
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          colors: {
-            brand: {
-              DEFAULT: '#4f46e5',
-              dark: '#3730a3',
-              glow: 'rgba(79, 70, 229, 0.15)'
-            },
-            darkbg: '#090a0f',
-            cardbg: 'rgba(15, 17, 26, 0.7)'
-          }
-        }
-      }
-    }
-  </script>
+  <link rel="stylesheet" href="/tailwind.css" />
   <!-- Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
   <!-- Lucide Icons -->
-  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="/lucide.min.js"></script>
   <!-- Xterm.js for interactive Web Terminal -->
-  <link rel="stylesheet" href="https://unpkg.com/xterm@5.3.0/css/xterm.css" />
-  <script src="https://unpkg.com/xterm@5.3.0/lib/xterm.js"></script>
+  <link rel="stylesheet" href="/xterm.css" />
+  <script src="/xterm.js"></script>
   <!-- Font Setup -->
   <style>
     body {
@@ -58,6 +39,53 @@
   </style>
 </head>
 <body class="text-slate-100 min-h-screen flex flex-col antialiased">
+
+  <!-- Login Container -->
+  <div id="login-container" class="hidden min-h-screen flex items-center justify-center p-6 relative overflow-hidden bg-darkbg">
+    <!-- Glow Background -->
+    <div class="absolute top-1/4 left-1/4 w-96 h-96 bg-brand/20 rounded-full blur-3xl -translate-x-1/2 -translate-y-1/2"></div>
+    <div class="absolute bottom-1/4 right-1/4 w-96 h-96 bg-cyan-500/10 rounded-full blur-3xl translate-x-1/2 translate-y-1/2"></div>
+
+    <div class="glass max-w-md w-full p-10 rounded-3xl border border-white/5 space-y-8 relative z-10 text-center shadow-2xl">
+      <div class="space-y-3">
+        <img src="/logo.jpg" alt="Reguant Logo" class="w-16 h-16 rounded-2xl object-cover mx-auto shadow-xl border border-white/10" onerror="this.src='https://placehold.co/64x64/4f46e5/ffffff?text=R'">
+        <h2 class="text-3xl font-extrabold text-white tracking-tight">reguant</h2>
+        <p class="text-slate-400 text-sm">Control Plane Authentication</p>
+      </div>
+
+      <div id="login-error" class="hidden text-xs bg-rose-500/10 text-rose-400 border border-rose-500/20 px-4 py-3 rounded-xl"></div>
+
+      <!-- OAuth Sign In -->
+      <div id="oauth-section" class="hidden">
+        <a href="/api/auth/github" class="w-full bg-white text-slate-900 py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-slate-100 transition-all duration-300 shadow-lg shadow-white/5">
+          <i data-lucide="github" class="w-5 h-5"></i> Sign in with GitHub
+        </a>
+        <div class="relative my-6">
+          <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-white/10"></div></div>
+          <div class="relative text-xs text-slate-500 uppercase tracking-wider bg-darkbg px-2 inline-block z-10">or use API token</div>
+        </div>
+      </div>
+
+      <!-- API Token Sign In -->
+      <form onsubmit="handleTokenLogin(event)" class="space-y-4 text-left">
+        <div>
+          <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">REGUANT_API_TOKEN</label>
+          <input type="password" id="login-token-input" placeholder="Paste your API token here..." required class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-brand transition-all text-sm font-mono">
+        </div>
+        <button type="submit" class="w-full bg-brand text-white py-3.5 rounded-xl font-bold hover:bg-brand-dark transition-all duration-300 shadow-lg shadow-brand/20">
+          Connect to Server
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast notification -->
+  <div id="toast" class="fixed bottom-6 right-6 z-50 glass px-6 py-4 rounded-2xl border border-emerald-500/20 bg-emerald-950/20 text-emerald-400 flex items-center gap-3 translate-y-20 opacity-0 transition-all duration-300 shadow-2xl">
+    <i data-lucide="check-circle" class="w-5 h-5 text-emerald-400"></i>
+    <span id="toast-message" class="text-sm font-semibold">Message here</span>
+  </div>
+
+  <div id="app-container" class="flex-1 flex flex-col hidden">
 
   <!-- Navigation -->
   <nav class="glass border-b border-white/5 py-4 px-6 md:px-12 flex items-center justify-between sticky top-0 z-50">
@@ -294,32 +322,62 @@
     </div>
 
   </main>
+  </div>
 
   <script>
     // Tab Router
 
-    // --- Reguant auth helpers (token injected server-side) ---
+    // --- Reguant auth helpers ---
+    function getAPIToken() {
+      return window.REGUANT_API_TOKEN || localStorage.getItem('reguant_api_token');
+    }
     function apiFetch(url, opts) {
       opts = opts || {};
       opts.headers = opts.headers || {};
-      var t = window.REGUANT_API_TOKEN;
+      var t = getAPIToken();
       if (t) opts.headers['Authorization'] = 'Bearer ' + t;
       return fetch(url, opts);
     }
     function wsURL(path) {
-      var t = window.REGUANT_API_TOKEN;
+      var t = getAPIToken();
       if (t) return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(t);
       return path;
     }
+    function handleLogoutAction() {
+      localStorage.removeItem('reguant_api_token');
+      window.location.href = '/api/auth/logout';
+    }
+
+    // Toast notification helper
+    function showToast(message, isError = false) {
+      const toast = document.getElementById('toast');
+      const toastMsg = document.getElementById('toast-message');
+      toastMsg.innerText = message;
+      
+      const icon = toast.querySelector('i');
+      if (isError) {
+        toast.className = "fixed bottom-6 right-6 z-50 glass px-6 py-4 rounded-2xl border border-rose-500/20 bg-rose-950/20 text-rose-400 flex items-center gap-3 translate-y-20 opacity-0 transition-all duration-300 shadow-2xl";
+        icon.setAttribute('data-lucide', 'alert-circle');
+      } else {
+        toast.className = "fixed bottom-6 right-6 z-50 glass px-6 py-4 rounded-2xl border border-emerald-500/20 bg-emerald-950/20 text-emerald-400 flex items-center gap-3 translate-y-20 opacity-0 transition-all duration-300 shadow-2xl";
+        icon.setAttribute('data-lucide', 'check-circle');
+      }
+      lucide.createIcons();
+      
+      toast.classList.remove('translate-y-20', 'opacity-0');
+      setTimeout(() => {
+        toast.classList.add('translate-y-20', 'opacity-0');
+      }, 4000);
+    }
+
     (function () {
       var area = document.getElementById('auth-area');
       if (area) {
         var hasSession = document.cookie.split(';').some(function (c) { return c.trim().indexOf('reguant_session=') === 0; });
-        if (window.REGUANT_API_TOKEN || hasSession) {
-          area.innerHTML = '<a href="/api/auth/logout" class="text-slate-300 hover:text-white text-sm font-semibold">Sign out</a>';
+        if (getAPIToken() || hasSession) {
+          area.innerHTML = '<a href="#" onclick="handleLogoutAction(); return false;" class="text-slate-300 hover:text-white text-sm font-semibold">Sign out</a>';
         } else {
-          area.innerHTML = '<a href="/api/auth/github" class="text-brand hover:text-white text-sm font-semibold flex items-center gap-2"><i data-lucide="github" class="w-4 h-4"></i> Sign in</a>';
-          if (window.lucide) window.lucide.createIcons();
+          area.innerHTML = '';
         }
       }
     })();
@@ -341,13 +399,25 @@
     // Connect to WebSocket Server Metrics
     const host = window.location.host;
     const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const statsWS = new WebSocket(`${wsProto}//${host}${wsURL('/api/ws/stats')}`);
+    let statsWS = null;
 
-    statsWS.onmessage = function(event) {
-      const data = JSON.parse(event.data);
-      updateGauge('cpu', data.cpu);
-      updateGauge('ram', data.mem);
-    };
+    function connectStatsWS() {
+      if (statsWS) {
+        try { statsWS.close(); } catch(e) {}
+      }
+      statsWS = new WebSocket(`${wsProto}//${host}${wsURL('/api/ws/stats')}`);
+      statsWS.onmessage = function(event) {
+        const data = JSON.parse(event.data);
+        updateGauge('cpu', data.cpu);
+        updateGauge('ram', data.mem);
+      };
+      statsWS.onclose = function() {
+        setTimeout(connectStatsWS, 3000);
+      };
+      statsWS.onerror = function() {
+        statsWS.close();
+      };
+    }
 
     function updateGauge(type, val) {
       document.getElementById(`${type}-value`).innerText = val.toFixed(0) + '%';
@@ -440,9 +510,20 @@
               </div>
             </div>
             <p class="text-xs text-slate-400 truncate mono">${app.GitRepo}</p>
-            <div class="text-sm font-semibold text-slate-300 flex items-center gap-1.5">
-              <i data-lucide="link" class="w-3.5 h-3.5 text-brand"></i>
-              <a href="http://${app.Domain || '127.0.0.1:' + app.Port}" target="_blank" class="hover:underline">${app.Domain || 'Port: ' + app.Port}</a>
+            <div class="text-sm font-semibold text-slate-300 flex items-center justify-between gap-1.5">
+              <div class="flex items-center gap-1.5 truncate">
+                <i data-lucide="link" class="w-3.5 h-3.5 text-brand"></i>
+                <a href="${app.SSLEnabled ? 'https' : 'http'}://${app.Domain || '127.0.0.1:' + app.Port}" target="_blank" class="hover:underline truncate">${app.Domain || 'Port: ' + app.Port}</a>
+              </div>
+              ${app.Domain ? `
+                <button onclick="toggleSSL('${app.ID}', ${app.SSLEnabled})" class="px-2 py-0.5 rounded-md text-[10px] font-bold transition-all border ${
+                  app.SSLEnabled 
+                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20' 
+                    : 'bg-slate-500/10 text-slate-400 border-slate-500/20 hover:bg-slate-500/20'
+                }" title="${app.SSLEnabled ? 'Disable SSL' : 'Enable SSL'}">
+                  <i data-lucide="${app.SSLEnabled ? 'shield-check' : 'shield'}" class="w-3 h-3 inline mr-1"></i>${app.SSLEnabled ? 'SSL' : 'Enable SSL'}
+                </button>
+              ` : ''}
             </div>
           </div>
           <div class="grid grid-cols-3 gap-2 mt-6">
@@ -567,13 +648,12 @@
           if (res.ok) {
             closeEnvModal();
             loadApps();
-            // Automatically trigger redeployment to apply variables
-            deployApp(appId);
+            showToast("Environment variables saved! Redeployment triggered.");
           } else {
-            alert("Failed to save environment variables");
+            showToast("Failed to save environment variables", true);
           }
         } catch (err) {
-          alert("Network error: " + err.message);
+          showToast("Network error: " + err.message, true);
         } finally {
           saveBtn.innerText = "Save & Apply";
           saveBtn.disabled = false;
@@ -701,10 +781,135 @@
       }
     }
 
+    // SSL Toggle Action (A2)
+    async function toggleSSL(appId, currentSslEnabled) {
+      const targetState = !currentSslEnabled;
+      const confirmMsg = targetState
+        ? "Are you sure you want to enable SSL (HTTPS) for this application? This requires port 80/443 pointing to this server."
+        : "Are you sure you want to disable SSL (HTTPS) for this application?";
+      if (!confirm(confirmMsg)) return;
+
+      try {
+        const res = await apiFetch(`/api/apps/ssl?app_id=${appId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ssl: targetState })
+        });
+        if (res.ok) {
+          showToast(`SSL ${targetState ? 'enabled' : 'disabled'} successfully.`);
+          loadApps();
+        } else {
+          const errText = await res.text();
+          showToast("Failed to configure SSL: " + errText, true);
+        }
+      } catch (err) {
+        showToast("Error configuring SSL: " + err.message, true);
+      }
+    }
+
+    // Authentication Checks & Screen (A6)
+    function showLoginScreen(oauthEnabled, errorMsg) {
+      document.getElementById('app-container').classList.add('hidden');
+      document.getElementById('login-container').classList.remove('hidden');
+      
+      const oauthSection = document.getElementById('oauth-section');
+      if (oauthEnabled) {
+        oauthSection.classList.remove('hidden');
+      } else {
+        oauthSection.classList.add('hidden');
+      }
+
+      const errEl = document.getElementById('login-error');
+      if (errorMsg) {
+        errEl.innerText = errorMsg;
+        errEl.classList.remove('hidden');
+      } else {
+        errEl.classList.add('hidden');
+      }
+      lucide.createIcons();
+    }
+
+    function hideLoginScreen() {
+      document.getElementById('login-container').classList.add('hidden');
+      document.getElementById('app-container').classList.remove('hidden');
+      lucide.createIcons();
+    }
+
+    async function handleTokenLogin(e) {
+      e.preventDefault();
+      const token = document.getElementById('login-token-input').value.trim();
+      const btn = e.target.querySelector('button[type="submit"]');
+      const errEl = document.getElementById('login-error');
+      errEl.classList.add('hidden');
+
+      if (!token) return;
+
+      try {
+        btn.innerText = "Connecting...";
+        btn.disabled = true;
+        
+        const res = await fetch('/api/apps', {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        
+        if (res.ok) {
+          localStorage.setItem('reguant_api_token', token);
+          hideLoginScreen();
+          loadApps();
+          connectStatsWS();
+        } else {
+          errEl.innerText = "Invalid API token. Access denied.";
+          errEl.classList.remove('hidden');
+        }
+      } catch (err) {
+        errEl.innerText = "Failed to connect to server: " + err.message;
+        errEl.classList.remove('hidden');
+      } finally {
+        btn.innerText = "Connect to Server";
+        btn.disabled = false;
+      }
+    }
+
+    async function checkAuth() {
+      const token = getAPIToken();
+      
+      let oauthEnabled = false;
+      try {
+        const res = await fetch('/api/health');
+        if (res.ok) {
+          const data = await res.json();
+          oauthEnabled = !!data.github_oauth;
+        }
+      } catch (e) {
+        console.error("Health check failed:", e);
+      }
+
+      if (!token) {
+        showLoginScreen(oauthEnabled);
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/apps', {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        if (res.ok) {
+          hideLoginScreen();
+          loadApps();
+          connectStatsWS();
+        } else {
+          localStorage.removeItem('reguant_api_token');
+          showLoginScreen(oauthEnabled, "Session expired or invalid API token.");
+        }
+      } catch (err) {
+        showLoginScreen(oauthEnabled, "Network error connecting to control plane.");
+      }
+    }
+
     // Initial Load
     window.onload = function() {
       lucide.createIcons();
-      loadApps();
+      checkAuth();
     }
   </script>
 </body>

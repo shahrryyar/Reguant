@@ -5,10 +5,13 @@ import (
 	"log"
 	"net/http"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
+
+	"github.com/shahrryyar/reguant/internal/config"
 )
 
 func (s *Server) handleWSTerminal(w http.ResponseWriter, r *http.Request) {
@@ -41,7 +44,7 @@ func (s *Server) handleWSTerminal(w http.ResponseWriter, r *http.Request) {
 		cmd = exec.Command("docker", "exec", "-it", containerName, "/bin/sh")
 	} else {
 		// Run a bash shell on the host, scoped to the app folder
-		appDir := fmt.Sprintf("/var/lib/reguant/apps/%s", appName)
+		appDir := appWorkingDir(s.cfg, appName)
 		cmd = exec.Command("/bin/bash")
 		cmd.Dir = appDir
 	}
@@ -87,4 +90,10 @@ func (s *Server) handleWSTerminal(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+}
+
+// appWorkingDir returns the on-host directory an app's native shell should
+// start in, honoring REGUANT_APPS_DIR instead of a hardcoded path.
+func appWorkingDir(cfg *config.Config, appName string) string {
+	return filepath.Join(cfg.AppsDir, appName)
 }

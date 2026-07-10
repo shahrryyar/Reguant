@@ -14,6 +14,7 @@ type Config struct {
 	S3Region                string
 	APIToken                string
 	CORSOrigin              string
+	SSLEmail               string
 	GitHubOAuthClientID     string
 	GitHubOAuthClientSecret string
 }
@@ -29,6 +30,7 @@ func Load() *Config {
 		S3Region:                getEnv("REGUANT_S3_REGION", "auto"),
 		APIToken:                getEnv("REGUANT_API_TOKEN", ""),
 		CORSOrigin:              getEnv("REGUANT_CORS_ORIGIN", ""),
+		SSLEmail:                getEnv("REGUANT_SSL_EMAIL", ""),
 		GitHubOAuthClientID:     getEnv("REGUANT_GITHUB_OAUTH_CLIENT_ID", ""),
 		GitHubOAuthClientSecret: getEnv("REGUANT_GITHUB_OAUTH_CLIENT_SECRET", ""),
 	}

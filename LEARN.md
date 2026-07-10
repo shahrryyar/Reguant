@@ -112,9 +112,8 @@ This is the single most important flow to understand.
 A deploy starts from one of three places, all funneling into
 `deployer.Deploy(appID)`:
 * Dashboard "Deploy" button → `POST /api/apps/deploy?app_id=...`
-* Git push → `POST /api/webhooks/github`, which matches `repo + branch` against the
-  `applications` table and calls `Deploy` for each match.
-* (Internally) saving env vars triggers a redeploy.
+* Git push → `POST /api/webhooks/github`, which performs URL normalization (lowercase, strips `.git` suffix, and handles SSH-to-HTTPS format mappings) to match private repos cloned via SSH and public repos cloned via HTTPS against the `applications` table, then calls `Deploy` for each match.
+* Saving environment variables → `PUT /api/apps/env?app_id=...` automatically triggers a redeploy.
 
 ### 5b. Queue + run
 `Deploy()` writes a `deployments` row (`queued`), then runs
@@ -147,8 +146,7 @@ old container is removed first. Net effect: traffic keeps flowing with no gap.
 Whenever an app has a `domain`, `internal/proxy/nginx.go` writes
 `reguant-<name>.conf` into `REGUANT_NGINX_DIR` (`/etc/nginx/sites-enabled` by
 default) and runs `nginx -t && nginx -s reload`. The config is a plain
-`proxy_pass http://127.0.0.1:<port>` server block. TLS is added later via
-`EnableSSL()` → `certbot --nginx -d <domain>`, which rewrites the file in place.
+`proxy_pass http://127.0.0.1:<port>` server block. TLS is enabled via the `POST /api/apps/ssl?app_id=...` endpoint which calls `EnableSSL(domain, email)` (loaded from `REGUANT_SSL_EMAIL` config) to execute `certbot --nginx -d <domain> -m <email> --agree-tos --non-interactive` and rewrite the Nginx virtual host file in place.
 
 ---
 

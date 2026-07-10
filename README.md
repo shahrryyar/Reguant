@@ -159,7 +159,16 @@ When you save variables, they are stored securely in SQLite and dynamically inje
 - Docker `-e` run parameters in **Docker Mode**.
 - `Environment=` strings inside systemd service files in **Systemd Mode**.
 
-Saving environment variables automatically triggers a staging build to redeploy the app with its updated configuration.
+Saving environment variables automatically triggers a build to redeploy the application with the updated configuration.
+
+---
+
+## 🔒 SSL/TLS Configurations (HTTPS)
+Reguant provides native, automatic HTTPS via Certbot and Let's Encrypt.
+- **SSL API Endpoint**: `POST /api/apps/ssl?app_id=<app_id>`
+  - Body: `{"ssl": true}` or `{"ssl": false}`
+  - Wires Certbot to request a certificate using the configured `REGUANT_SSL_EMAIL` and updates the Nginx virtual host block in-place.
+- **SSL Email**: Configured via `REGUANT_SSL_EMAIL` during installation or service config. Used by Let's Encrypt for registration and renewal warning notifications.
 
 ---
 
