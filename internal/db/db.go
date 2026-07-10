@@ -15,6 +15,13 @@ func Init(dbPath string) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
+	// SQLite has exactly one writer; serialize through a single connection so
+	// concurrent goroutines queue on the Go side instead of racing to a
+	// "database is locked" error.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
+
 	// Apply SQLite speed and concurrency optimizations
 	pragmas := []string{
 		"PRAGMA journal_mode = WAL;",
