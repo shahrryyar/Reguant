@@ -21,11 +21,17 @@ import (
 	"github.com/shahrryyar/reguant/internal/proxy"
 )
 
+type deployHandle struct {
+	gen    uint64
+	cancel context.CancelFunc
+}
+
 type Deployer struct {
 	db     *sql.DB
 	cfg    *config.Config
 	mu     sync.Mutex
-	active map[string]context.CancelFunc // Map of app ID to cancellation function
+	active map[string]deployHandle
+	genSeq uint64
 }
 
 type Application struct {
@@ -47,7 +53,7 @@ func NewDeployer(db *sql.DB, cfg *config.Config) *Deployer {
 	return &Deployer{
 		db:     db,
 		cfg:    cfg,
-		active: make(map[string]context.CancelFunc),
+		active: make(map[string]deployHandle),
 	}
 }
 
@@ -77,12 +83,14 @@ func (d *Deployer) Deploy(appID string) (string, error) {
 	defer d.mu.Unlock()
 
 	// Cancel existing deployment for this app if it is running
-	if cancel, exists := d.active[appID]; exists {
-		cancel()
+	if h, exists := d.active[appID]; exists {
+		h.cancel()
 	}
 
+	d.genSeq++
+	gen := d.genSeq
 	ctx, cancel := context.WithCancel(context.Background())
-	d.active[appID] = cancel
+	d.active[appID] = deployHandle{gen: gen, cancel: cancel}
 
 	// Create a new Deployment entry in the database
 	deploymentID := fmt.Sprintf("dep_%d", time.Now().UnixNano())
@@ -96,17 +104,13 @@ func (d *Deployer) Deploy(appID string) (string, error) {
 	}
 
 	// Run build asynchronously
-	go d.runDeploymentPipeline(ctx, deploymentID, appID)
+	go d.runDeploymentPipeline(ctx, deploymentID, appID, gen)
 
 	return deploymentID, nil
 }
 
-func (d *Deployer) runDeploymentPipeline(ctx context.Context, depID, appID string) {
-	defer func() {
-		d.mu.Lock()
-		delete(d.active, appID)
-		d.mu.Unlock()
-	}()
+func (d *Deployer) runDeploymentPipeline(ctx context.Context, depID, appID string, gen uint64) {
+	defer d.finishDeploy(appID, gen)
 
 	updateStatus := func(status string, logsAppend string) {
 		_, _ = d.db.Exec(`
@@ -395,8 +399,8 @@ func (d *Deployer) Delete(appID string) error {
 	defer d.mu.Unlock()
 
 	// Cancel active deployment if running
-	if cancel, exists := d.active[appID]; exists {
-		cancel()
+	if h, exists := d.active[appID]; exists {
+		h.cancel()
 		delete(d.active, appID)
 	}
 
@@ -450,4 +454,15 @@ func (d *Deployer) Delete(appID string) error {
 
 	log.Printf("Successfully tore down resources and deleted application: %s", name)
 	return nil
+}
+
+// finishDeploy removes an app's active handle only if it still belongs to the
+// generation that is finishing, so a slow older deploy's defer cannot evict a
+// newer one that has already replaced it.
+func (d *Deployer) finishDeploy(appID string, gen uint64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if h, ok := d.active[appID]; ok && h.gen == gen {
+		delete(d.active, appID)
+	}
 }
