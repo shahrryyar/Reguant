@@ -293,7 +293,11 @@ func (d *Deployer) deploySystemd(ctx context.Context, depID string, app *Applica
 	_ = json.Unmarshal([]byte(app.EnvVars), &envMap)
 	envStrings := []string{fmt.Sprintf("Environment=PORT=%d", app.Port)}
 	for k, v := range envMap {
-		envStrings = append(envStrings, fmt.Sprintf("Environment=%s=%s", k, v))
+		line, eerr := SystemdEnvLine(k, v)
+		if eerr != nil {
+			return fmt.Errorf("invalid environment variable: %w", eerr)
+		}
+		envStrings = append(envStrings, line)
 	}
 
 	serviceConfig := fmt.Sprintf(`[Unit]
