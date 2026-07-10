@@ -175,6 +175,9 @@ func (d *Deployer) runDeploymentPipeline(ctx context.Context, depID, appID strin
 		}
 	}
 
+	// Record the deployed commit so history and rollback have something to show.
+	d.recordCommit(depID, appDir)
+
 	// Step 2: Run build based on BuildType (Docker or Systemd)
 	if app.BuildType == "docker" {
 		err = d.deployDocker(ctx, depID, &app, appDir)
@@ -501,4 +504,21 @@ func (d *Deployer) finishDeploy(appID string, gen uint64) {
 	if h, ok := d.active[appID]; ok && h.gen == gen {
 		delete(d.active, appID)
 	}
+}
+
+// recordCommit reads the checked-out HEAD sha + subject and stores them on the
+// deployment row. Best-effort: a missing git or detached state just leaves the
+// columns null.
+func (d *Deployer) recordCommit(depID, appDir string) {
+	out, err := exec.Command("git", "-C", appDir, "log", "-1", "--pretty=%H%n%s").Output()
+	if err != nil {
+		return
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)
+	hash := parts[0]
+	msg := ""
+	if len(parts) > 1 {
+		msg = parts[1]
+	}
+	_, _ = d.db.Exec(`UPDATE deployments SET commit_hash = ?, commit_message = ? WHERE id = ?`, hash, msg, depID)
 }
