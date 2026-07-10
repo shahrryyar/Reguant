@@ -14,7 +14,7 @@ type Config struct {
 	S3Region                string
 	APIToken                string
 	CORSOrigin              string
-	SSLEmail               string
+	SSLEmail                string
 	GitHubOAuthClientID     string
 	GitHubOAuthClientSecret string
 }
