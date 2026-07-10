@@ -97,7 +97,7 @@ func Start(addr string, db *sql.DB) error {
 	mux.HandleFunc("/api/apps/deploy", srv.handleDeploy)
 	mux.HandleFunc("/api/apps/stats", srv.handleAppStats)
 	mux.HandleFunc("/api/apps/env", srv.handleUpdateEnv)            // Update env vars
-	mux.HandleFunc("/api/apps/ssl", srv.handleEnableSSL)          // Enable TLS for an app's domain
+	mux.HandleFunc("/api/apps/ssl", srv.handleEnableSSL)            // Enable TLS for an app's domain
 	mux.HandleFunc("/api/webhooks/github", srv.handleGitHubWebhook) // Auto deployment webhook
 
 	// WebSockets Endpoints
